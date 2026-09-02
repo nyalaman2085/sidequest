@@ -636,6 +636,15 @@ function App() {
           </span>
           <b>↗</b>
         </button>
+        {connectionState === "connected" && (
+  <button
+    className="secondary-action"
+    onClick={leaveCurrentMatch}
+    aria-label="Exit current call"
+  >
+    Exit
+  </button>
+)}
       </section>
       <section className="chat-panel">
         <div className="chat-heading">
