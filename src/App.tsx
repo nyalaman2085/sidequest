@@ -635,16 +635,7 @@ function App() {
                 : "Find someone"}
           </span>
           <b>↗</b>
-        </button>
-        {connectionState === "connected" && (
-  <button
-    className="secondary-action"
-    onClick={leaveCurrentMatch}
-    aria-label="Exit current call"
-  >
-    Exit
-  </button>
-)}
+        </button>       
       </section>
       <section className="chat-panel">
         <div className="chat-heading">
