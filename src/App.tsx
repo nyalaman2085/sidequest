@@ -65,26 +65,10 @@ function App() {
     localStorage.setItem("sidequest-theme", theme);
   }, [theme]);
 
-  const stopMedia = () => {
-    streamRef.current?.getTracks().forEach((track) => track.stop());
-    streamRef.current = null;
-    if (previewRef.current) previewRef.current.srcObject = null;
-    setIsMuted(false);
-    setIsCameraOff(false);
-  };
-
-  const requestMediaAccess = async () => {
-    if (streamRef.current?.getTracks().some((track) => track.readyState === "live")) {
-      return true;
-    }
-
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setNotice("Camera and microphone are not available in this browser.");
-      return false;
-    }
-
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
+  useEffect(() => {
+    let active = true;
+    navigator.mediaDevices
+      ?.getUserMedia({
         video: {
           width: { ideal: 1280, max: 1920 },
           height: { ideal: 720, max: 1080 },
@@ -97,44 +81,39 @@ function App() {
           channelCount: 1,
           sampleRate: 48000,
         },
-      });
-
-      streamRef.current = stream;
-      const microphone = stream.getAudioTracks()[0];
-      if (microphone) {
-        microphone.contentHint = "speech";
-        await microphone
-          .applyConstraints({
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-            channelCount: 1,
-          })
-          .catch(() => undefined);
-      }
-      if (previewRef.current) previewRef.current.srcObject = stream;
-      return true;
-    } catch {
-      setNotice("Camera or microphone access was denied. Please allow access and try again.");
-      return false;
-    }
-  };
-
-  useEffect(() => {
-    const cleanup = () => {
-      streamRef.current?.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
-      if (previewRef.current) previewRef.current.srcObject = null;
-      peerRef.current?.close();
-      peerRef.current = null;
-      socketRef.current?.close();
-      socketRef.current = null;
-    };
-
-    window.addEventListener("pagehide", cleanup);
+      })
+      .then(async (stream) => {
+        if (!active) return stream.getTracks().forEach((track) => track.stop());
+        streamRef.current = stream;
+        const microphone = stream.getAudioTracks()[0];
+        if (microphone) {
+          microphone.contentHint = "speech";
+          await microphone
+            .applyConstraints({
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true,
+              channelCount: 1,
+            })
+            .catch(() => undefined);
+        }
+        if (previewRef.current) {
+          const preview = previewRef.current;
+          preview.srcObject = stream;
+          preview.muted = true;
+          preview.defaultMuted = true;
+          preview.playsInline = true;
+          void preview.play().catch(() => undefined);
+        }
+      })
+      .catch(() =>
+        setNotice("Camera access is off. You can still browse the lobby."),
+      );
     return () => {
-      window.removeEventListener("pagehide", cleanup);
-      cleanup();
+      active = false;
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      peerRef.current?.close();
+      socketRef.current?.close();
     };
   }, []);
 
@@ -153,7 +132,7 @@ function App() {
     if (remoteRef.current) remoteRef.current.srcObject = null;
   };
 
-  const leaveCurrentMatch = (stopLocalMedia = false) => {
+  const leaveCurrentMatch = () => {
     closePeer();
     const socket = socketRef.current;
     socketRef.current = null;
@@ -161,19 +140,6 @@ function App() {
       socket.send(JSON.stringify({ type: "leave" }));
     }
     socket?.close();
-
-    if (stopLocalMedia) {
-      stopMedia();
-      setConnectionState("idle");
-      setSessionTime(0);
-      setChatMessages([]);
-      setOtherUsername("Someone new");
-      setNotice("Camera and microphone are off. You have exited the call.");
-    }
-  };
-
-  const exitSession = () => {
-    leaveCurrentMatch(true);
   };
 
   const openSearch = () => {
@@ -237,7 +203,6 @@ function App() {
         );
       if (message.type === "partner-left") {
         closePeer();
-        stopMedia();
         setConnectionState("idle");
         setChatMessages([]);
         setNotice("That person left. Find someone else?");
@@ -297,16 +262,12 @@ function App() {
     nextPerson();
   };
 
-  const findSomeone = async () => {
+  const findSomeone = () => {
     if (!account) {
       setShowAccount(true);
       setNotice("Create a private profile before joining the lobby.");
       return;
     }
-
-    const granted = await requestMediaAccess();
-    if (!granted) return;
-
     const socket = socketRef.current;
     if (socket?.readyState === WebSocket.OPEN) {
       setConnectionState("searching");
@@ -422,13 +383,6 @@ function App() {
             aria-label="Change theme"
           >
             {theme === "dark" ? "Light" : "Dark"}
-          </button>
-          <button
-            className="exit-button"
-            onClick={exitSession}
-            aria-label="Exit call and turn off camera and microphone"
-          >
-            Exit
           </button>
           <button
             className="account-button"
