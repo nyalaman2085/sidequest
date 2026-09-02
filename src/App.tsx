@@ -7,27 +7,16 @@ type ChatMessage = {
   text: string;
   sender: "you" | "other";
 };
-type Account = { username: string };
+type Account = { username: string; email: string };
 
-const readStoredJson = <T,>(key: string, fallback: T): T => {
-  try {
-    const stored = localStorage.getItem(key);
-    return stored ? (JSON.parse(stored) as T) : fallback;
-  } catch {
-    return fallback;
-  }
-};
-
-const iceServers: RTCIceServer[] = [
-  { urls: "stun:stun.l.google.com:19302" },
-  ...(import.meta.env.VITE_TURN_URL
-    ? [{
-        urls: import.meta.env.VITE_TURN_URL,
-        username: import.meta.env.VITE_TURN_USERNAME,
-        credential: import.meta.env.VITE_TURN_CREDENTIAL,
-      }]
-    : []),
+const icebreakers = [
+  "What is something small that made you smile today?",
+  "What is a place you would love to visit?",
+  "What song have you been enjoying lately?",
+  "What is a hobby you would like to try?",
 ];
+
+const iceServers = [{ urls: "stun:stun.l.google.com:19302" }];
 
 function App() {
   const [connectionState, setConnectionState] =
@@ -38,27 +27,31 @@ function App() {
   const [sessionTime, setSessionTime] = useState(0);
   const [chatInput, setChatInput] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [icebreakerIndex, setIcebreakerIndex] = useState(0);
   const [account, setAccount] = useState<Account | null>(() => {
-    const saved = readStoredJson<Account | null>("sidequest-account", null);
-    return saved?.username ? { username: saved.username } : null;
+    const saved = localStorage.getItem("sidequest-account");
+    return saved ? (JSON.parse(saved) as Account) : null;
   });
   const [accountForm, setAccountForm] = useState<Account>({
     username: "",
+    email: "",
   });
   const [showAccount, setShowAccount] = useState(false);
+  const [theme, setTheme] = useState<"dark" | "light">(
+    () =>
+      (localStorage.getItem("sidequest-theme") as "dark" | "light") || "dark",
+  );
   const [otherUsername, setOtherUsername] = useState("Someone new");
+  const [blockedUsers, setBlockedUsers] = useState<string[]>(
+    () =>
+      JSON.parse(localStorage.getItem("sidequest-blocked") || "[]") as string[],
+  );
   const chatEndRef = useRef<HTMLDivElement>(null);
   const previewRef = useRef<HTMLVideoElement>(null);
-  const hasLobbyRequestRef = useRef(false);
   const remoteRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const peerRef = useRef<RTCPeerConnection | null>(null);
-  const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
-  const isMutedRef = useRef(false);
-  const isInitiatorRef = useRef(false);
-  const reconnectTimerRef = useRef<number | null>(null);
-  const restartAttemptsRef = useRef(0);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({
@@ -68,39 +61,33 @@ function App() {
   }, [chatMessages]);
 
   useEffect(() => {
-    document.documentElement.dataset.theme = "dark";
-  }, []);
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem("sidequest-theme", theme);
+  }, [theme]);
 
-  useEffect(() => {
-    isMutedRef.current = isMuted;
-    if (remoteRef.current) remoteRef.current.muted = isMuted;
-  }, [isMuted]);
+  const stopMedia = () => {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    if (previewRef.current) previewRef.current.srcObject = null;
+    setIsMuted(false);
+    setIsCameraOff(false);
+  };
 
   const requestMediaAccess = async () => {
-    const isSecure = window.isSecureContext;
-    const isLocalhost =
-      window.location.hostname === "localhost" ||
-      window.location.hostname === "127.0.0.1" ||
-      window.location.hostname.endsWith(".local");
-
-    if (!isSecure && !isLocalhost) {
-      setNotice(
-        "Camera access needs a secure browser connection. Use localhost or HTTPS.",
-      );
-      return false;
+    if (streamRef.current?.getTracks().some((track) => track.readyState === "live")) {
+      return true;
     }
 
-    const prefersPortrait =
-      window.matchMedia("(orientation: portrait)").matches ||
-      window.innerHeight > window.innerWidth;
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setNotice("Camera and microphone are not available in this browser.");
+      return false;
+    }
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
-          facingMode: { ideal: "user" },
-          aspectRatio: prefersPortrait ? 9 / 16 : 16 / 9,
-          width: { ideal: prefersPortrait ? 1080 : 1920, max: 1920 },
-          height: { ideal: prefersPortrait ? 1920 : 1080, max: 1080 },
+          width: { ideal: 1280, max: 1920 },
+          height: { ideal: 720, max: 1080 },
           frameRate: { ideal: 30, max: 30 },
         },
         audio: {
@@ -128,19 +115,28 @@ function App() {
       if (previewRef.current) previewRef.current.srcObject = stream;
       return true;
     } catch {
-      setNotice("Camera access is off. Please allow camera and mic access.");
+      setNotice("Camera or microphone access was denied. Please allow access and try again.");
       return false;
     }
   };
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    const cleanup = () => {
       streamRef.current?.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+      if (previewRef.current) previewRef.current.srcObject = null;
       peerRef.current?.close();
+      peerRef.current = null;
       socketRef.current?.close();
-    },
-    [],
-  );
+      socketRef.current = null;
+    };
+
+    window.addEventListener("pagehide", cleanup);
+    return () => {
+      window.removeEventListener("pagehide", cleanup);
+      cleanup();
+    };
+  }, []);
 
   useEffect(() => {
     if (connectionState !== "connected") return;
@@ -152,38 +148,12 @@ function App() {
   }, [connectionState]);
 
   const closePeer = () => {
-    if (reconnectTimerRef.current !== null) {
-      window.clearTimeout(reconnectTimerRef.current);
-      reconnectTimerRef.current = null;
-    }
     peerRef.current?.close();
     peerRef.current = null;
-    pendingCandidatesRef.current = [];
-    restartAttemptsRef.current = 0;
-    isInitiatorRef.current = false;
     if (remoteRef.current) remoteRef.current.srcObject = null;
   };
 
-  const addRemoteCandidate = async (candidate: RTCIceCandidateInit) => {
-    const peer = peerRef.current;
-    if (!peer || !peer.remoteDescription) {
-      pendingCandidatesRef.current.push(candidate);
-      return;
-    }
-    await peer.addIceCandidate(candidate);
-  };
-
-  const setRemoteDescription = async (
-    peer: RTCPeerConnection,
-    description: RTCSessionDescriptionInit,
-  ) => {
-    await peer.setRemoteDescription(description);
-    const pendingCandidates = pendingCandidatesRef.current;
-    pendingCandidatesRef.current = [];
-    await Promise.all(pendingCandidates.map((candidate) => peer.addIceCandidate(candidate)));
-  };
-
-  const leaveCurrentMatch = () => {
+  const leaveCurrentMatch = (stopLocalMedia = false) => {
     closePeer();
     const socket = socketRef.current;
     socketRef.current = null;
@@ -191,23 +161,29 @@ function App() {
       socket.send(JSON.stringify({ type: "leave" }));
     }
     socket?.close();
+
+    if (stopLocalMedia) {
+      stopMedia();
+      setConnectionState("idle");
+      setSessionTime(0);
+      setChatMessages([]);
+      setOtherUsername("Someone new");
+      setNotice("Camera and microphone are off. You have exited the call.");
+    }
   };
 
-  const resolveSignalUrl = () => {
-    const explicitUrl = import.meta.env.VITE_WS_URL;
-    if (explicitUrl) return explicitUrl;
-
-    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-    return `${protocol}://${window.location.host}/ws`;
+  const exitSession = () => {
+    leaveCurrentMatch(true);
   };
 
   const openSearch = () => {
-    hasLobbyRequestRef.current = true;
     leaveCurrentMatch();
     setConnectionState("searching");
     setSessionTime(0);
+    setChatMessages([]);
     setNotice("Looking for another person...");
-    const socket = new WebSocket(resolveSignalUrl());
+    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+    const socket = new WebSocket(`${protocol}://${window.location.host}/ws`);
     socketRef.current = socket;
     socket.onopen = () =>
       socket.send(
@@ -217,17 +193,10 @@ function App() {
         }),
       );
     socket.onmessage = async (event) => {
-      let message: { type: string; payload?: unknown };
-      try {
-        message = JSON.parse(event.data) as {
-          type: string;
-          payload?: unknown;
-        };
-      } catch {
-        setNotice("Received an invalid lobby message. Please try again.");
-        return;
-      }
-      if (!message.type) return;
+      const message = JSON.parse(event.data) as {
+        type: string;
+        payload?: unknown;
+      };
       if (message.type === "matched") {
         const match = message.payload as {
           initiator?: boolean;
@@ -239,8 +208,7 @@ function App() {
         );
         setConnectionState("connected");
         setNotice("You are live. Say hello.");
-        isInitiatorRef.current = Boolean(match.initiator);
-        restartAttemptsRef.current = 0;
+        setChatMessages([]);
         const peer = makePeer(socket);
         peerRef.current = peer;
         if ((message.payload as { initiator?: boolean })?.initiator) {
@@ -252,30 +220,26 @@ function App() {
       if (message.type === "offer") {
         const peer = peerRef.current ?? makePeer(socket);
         peerRef.current = peer;
-        await setRemoteDescription(
-          peer,
+        await peer.setRemoteDescription(
           message.payload as RTCSessionDescriptionInit,
         );
         const answer = await peer.createAnswer();
         await peer.setLocalDescription(answer);
         socket.send(JSON.stringify({ type: "answer", payload: answer }));
       }
-      if (message.type === "answer" && peerRef.current)
-        await setRemoteDescription(
-          peerRef.current,
+      if (message.type === "answer")
+        await peerRef.current?.setRemoteDescription(
           message.payload as RTCSessionDescriptionInit,
         );
-      if (message.type === "candidate") {
-        await addRemoteCandidate(message.payload as RTCIceCandidateInit)
-          .catch(() => setNotice("Could not establish a video connection."));
-      }
-      if (message.type === "error") {
-        const error = message.payload as { message?: string } | undefined;
-        setNotice(error?.message || "The lobby could not complete that action.");
-      }
+      if (message.type === "candidate")
+        await peerRef.current?.addIceCandidate(
+          message.payload as RTCIceCandidateInit,
+        );
       if (message.type === "partner-left") {
         closePeer();
+        stopMedia();
         setConnectionState("idle");
+        setChatMessages([]);
         setNotice("That person left. Find someone else?");
         setOtherUsername("Someone new");
       }
@@ -298,55 +262,50 @@ function App() {
       }
     };
     socket.onerror = () => {
-      if (!hasLobbyRequestRef.current) return;
       setConnectionState("idle");
       setNotice("The lobby is offline. Run npm run dev and try again.");
-      hasLobbyRequestRef.current = false;
     };
-    socket.onclose = () => {
-      if (socketRef.current !== socket) return;
-      socketRef.current = null;
-      if (peerRef.current) closePeer();
-      setConnectionState((state) => {
-        if (state !== "idle" && hasLobbyRequestRef.current) {
-          setNotice("The lobby connection closed. Try again.");
-        }
-        if (!hasLobbyRequestRef.current) {
-          setNotice("Ready when you are.");
-        }
-        hasLobbyRequestRef.current = false;
-        return "idle";
-      });
-    };
-  };
-
-  const resetChatForNewMatch = () => {
-    setChatMessages([]);
   };
 
   const saveAccount = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const username = accountForm.username.trim().replace(/\s+/g, " ");
-    if (!username) return;
-    const nextAccount = { username };
+    if (!username || !accountForm.email.includes("@")) return;
+    const nextAccount = { username, email: accountForm.email.trim() };
     setAccount(nextAccount);
     localStorage.setItem("sidequest-account", JSON.stringify(nextAccount));
     setShowAccount(false);
   };
 
+  const reportUser = async () => {
+    if (!otherUsername || otherUsername === "Someone new") return;
+    await fetch("/api/report", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: otherUsername, reason: "User report" }),
+    }).catch(() => undefined);
+    setNotice(`${otherUsername} was reported. You can find someone else.`);
+    nextPerson();
+  };
+
+  const blockUser = () => {
+    if (!otherUsername || otherUsername === "Someone new") return;
+    const nextBlocked = [...new Set([...blockedUsers, otherUsername])];
+    setBlockedUsers(nextBlocked);
+    localStorage.setItem("sidequest-blocked", JSON.stringify(nextBlocked));
+    setNotice(`${otherUsername} is blocked for this browser.`);
+    nextPerson();
+  };
+
   const findSomeone = async () => {
     if (!account) {
       setShowAccount(true);
-      setNotice("Add a display name before joining the lobby.");
+      setNotice("Create a private profile before joining the lobby.");
       return;
     }
 
-    hasLobbyRequestRef.current = true;
-
     const granted = await requestMediaAccess();
     if (!granted) return;
-
-    resetChatForNewMatch();
 
     const socket = socketRef.current;
     if (socket?.readyState === WebSocket.OPEN) {
@@ -357,27 +316,6 @@ function App() {
       return;
     }
     openSearch();
-  };
-
-  const restartIce = async (peer: RTCPeerConnection, socket: WebSocket) => {
-    if (
-      !isInitiatorRef.current ||
-      peer.connectionState === "closed" ||
-      socket.readyState !== WebSocket.OPEN ||
-      restartAttemptsRef.current >= 3
-    ) {
-      return;
-    }
-
-    restartAttemptsRef.current += 1;
-    setNotice("Restoring your connection...");
-    try {
-      const offer = await peer.createOffer({ iceRestart: true });
-      await peer.setLocalDescription(offer);
-      socket.send(JSON.stringify({ type: "offer", payload: offer }));
-    } catch {
-      setNotice("Connection recovery failed. Try Next person.");
-    }
   };
 
   const makePeer = (socket: WebSocket) => {
@@ -394,56 +332,31 @@ function App() {
       );
     peer.onconnectionstatechange = () => {
       if (peer.connectionState === "connected") {
-        if (reconnectTimerRef.current !== null) {
-          window.clearTimeout(reconnectTimerRef.current);
-          reconnectTimerRef.current = null;
-        }
-        restartAttemptsRef.current = 0;
         setNotice("Video and clear voice are connected.");
       }
-      if (peer.connectionState === "disconnected") {
-        setNotice("Connection is weak. Trying to restore it...");
-        if (reconnectTimerRef.current === null) {
-          reconnectTimerRef.current = window.setTimeout(() => {
-            reconnectTimerRef.current = null;
-            if (peer.connectionState === "disconnected")
-              void restartIce(peer, socket);
-          }, 5_000);
-        }
-      }
-      if (peer.connectionState === "failed") {
-        void restartIce(peer, socket);
+      if (["failed", "disconnected"].includes(peer.connectionState)) {
+        setNotice("Connection is unstable. Try Next person.");
       }
     };
     peer
       .getSenders()
+      .filter((sender) => sender.track?.kind === "audio")
       .forEach((sender) => {
         const parameters = sender.getParameters();
         parameters.encodings ??= [{}];
-        if (sender.track?.kind === "audio") {
-          parameters.encodings[0].maxBitrate = 128000;
-          parameters.encodings[0].priority = "high";
-        }
-        if (sender.track?.kind === "video") {
-          parameters.encodings[0].maxBitrate = 2_000_000;
-          parameters.encodings[0].maxFramerate = 30;
-          parameters.degradationPreference = "maintain-framerate";
-        }
+        parameters.encodings[0].maxBitrate = 128000;
         void sender.setParameters(parameters).catch(() => undefined);
       });
     peer.ontrack = (event) => {
       if (remoteRef.current) {
         remoteRef.current.srcObject = event.streams[0];
         remoteRef.current.volume = 1;
-        remoteRef.current.muted = isMutedRef.current;
       }
     };
     return peer;
   };
 
   const nextPerson = () => {
-    hasLobbyRequestRef.current = true;
-    resetChatForNewMatch();
     closePeer();
     const socket = socketRef.current;
     if (socket?.readyState === WebSocket.OPEN) {
@@ -457,59 +370,17 @@ function App() {
   };
 
   const toggleMute = () => {
-    const nextMuted = !isMuted;
     streamRef.current?.getAudioTracks().forEach((track) => {
-      track.enabled = !nextMuted;
+      track.enabled = isMuted;
     });
-    if (remoteRef.current) remoteRef.current.muted = nextMuted;
-    setIsMuted(nextMuted);
+    setIsMuted((muted) => !muted);
   };
 
   const toggleCamera = () => {
-    const stream = streamRef.current;
-    const videoTracks = stream?.getVideoTracks() || [];
-
-    // Keep the existing WebRTC track alive. Stopping/replacing it can freeze
-    // the remote video stream during renegotiation on some browsers.
-    if (videoTracks.length > 0) {
-      const nextCameraOff = !isCameraOff;
-      videoTracks.forEach((track) => {
-        track.enabled = !nextCameraOff;
-      });
-      setIsCameraOff(nextCameraOff);
-      return;
-    }
-
-    // Fallback for a call that was started before the track-preserving toggle
-    // was available and no longer has a local video track.
-    if (isCameraOff) {
-      navigator.mediaDevices
-        ?.getUserMedia({
-          video: {
-            width: { ideal: 1280, max: 1920 },
-            height: { ideal: 720, max: 1080 },
-            frameRate: { ideal: 30, max: 30 },
-          },
-        })
-        .then((cameraStream) => {
-          const videoTrack = cameraStream.getVideoTracks()[0];
-          if (!videoTrack || !stream) return;
-          stream.addTrack(videoTrack);
-          const videoSender = peerRef.current
-            ?.getTransceivers()
-            .find(
-              (transceiver) =>
-                transceiver.sender.track?.kind === "video" ||
-                transceiver.receiver.track.kind === "video",
-            )?.sender;
-          void videoSender?.replaceTrack(videoTrack);
-          if (previewRef.current) previewRef.current.srcObject = stream;
-          setIsCameraOff(false);
-        })
-        .catch(() => setNotice("Camera permission is still off."));
-      return;
-    }
-    setNotice("Camera is not available. Allow camera access and try again.");
+    streamRef.current?.getVideoTracks().forEach((track) => {
+      track.enabled = isCameraOff;
+    });
+    setIsCameraOff((off) => !off);
   };
 
   const sendChatMessage = (event: React.FormEvent<HTMLFormElement>) => {
@@ -522,10 +393,15 @@ function App() {
       socket?.readyState !== WebSocket.OPEN
     )
       return;
-    const id = crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+    const id = crypto.randomUUID();
     socket.send(JSON.stringify({ type: "chat", payload: { id, text } }));
     setChatMessages((messages) => [...messages, { id, text, sender: "you" }]);
     setChatInput("");
+  };
+
+  const addIcebreaker = () => {
+    setChatInput(icebreakers[icebreakerIndex]);
+    setIcebreakerIndex((index) => (index + 1) % icebreakers.length);
   };
 
   const formatTime = `${String(Math.floor(sessionTime / 60)).padStart(2, "0")}:${String(sessionTime % 60).padStart(2, "0")}`;
@@ -541,9 +417,23 @@ function App() {
             <span className="pulse" /> private room
           </span>
           <button
+            className="theme-button"
+            onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+            aria-label="Change theme"
+          >
+            {theme === "dark" ? "Light" : "Dark"}
+          </button>
+          <button
+            className="exit-button"
+            onClick={exitSession}
+            aria-label="Exit call and turn off camera and microphone"
+          >
+            Exit
+          </button>
+          <button
             className="account-button"
             onClick={() => {
-              setAccountForm(account || { username: "" });
+              setAccountForm(account || { username: "", email: "" });
               setShowAccount(true);
             }}
           >
@@ -552,11 +442,11 @@ function App() {
         </div>
       </nav>
       <section className="intro">
-        <p className="eyebrow">Meet someone new</p>
+        <p className="eyebrow">Random video chat</p>
         <h1>
-          Find a friendly face
+          Talk to someone
           <br />
-          <em>and start talking.</em>
+          <em>new today.</em>
         </h1>
         <p className="subhead">
           Click the button, wait for a match, and start a friendly conversation.
@@ -566,6 +456,14 @@ function App() {
         <div className={`video-card stranger ${connectionState}`}>
           <div className="video-top">
             <span className="label">OTHER PERSON</span>
+            <span
+              className={`username-status ${connectionState === "connected" ? "online" : "offline"}`}
+            >
+              <i />
+              {connectionState === "connected"
+                ? `@${otherUsername}`
+                : "OFFLINE"}
+            </span>
           </div>
           <video ref={remoteRef} autoPlay playsInline />
           <div className="empty-state">
@@ -600,6 +498,7 @@ function App() {
           </div>
           <div className="video-footer">
             <span>you</span>
+            <span>only you can see this</span>
           </div>
         </div>
       </section>
@@ -608,9 +507,7 @@ function App() {
           <button
             className={`round-control ${isMuted ? "active" : ""}`}
             onClick={toggleMute}
-            aria-label={isMuted ? "Turn sound on" : "Turn sound off"}
-            aria-pressed={isMuted}
-            title={isMuted ? "Turn sound on" : "Turn sound off"}
+            aria-label={isMuted ? "Unmute microphone" : "Mute microphone"}
           >
             {isMuted ? "♩" : "♬"}
           </button>
@@ -618,7 +515,6 @@ function App() {
             className={`round-control ${isCameraOff ? "active" : ""}`}
             onClick={toggleCamera}
             aria-label={isCameraOff ? "Turn camera on" : "Turn camera off"}
-            aria-pressed={isCameraOff}
           >
             ▣
           </button>
@@ -635,7 +531,7 @@ function App() {
                 : "Find someone"}
           </span>
           <b>↗</b>
-        </button>       
+        </button>
       </section>
       <section className="chat-panel">
         <div className="chat-heading">
@@ -666,6 +562,17 @@ function App() {
           )}
           <div ref={chatEndRef} />
         </div>
+        <div className="chat-tools">
+          <button
+            type="button"
+            className="icebreaker-button"
+            onClick={addIcebreaker}
+            disabled={connectionState !== "connected"}
+          >
+            ✦ Icebreaker
+          </button>
+          <span>Start with a friendly question</span>
+        </div>
         <form className="chat-form" onSubmit={sendChatMessage}>
           <input
             value={chatInput}
@@ -684,8 +591,29 @@ function App() {
           </button>
         </form>
       </section>
+      <section className="safety-tools">
+        <span>Only your username is visible. Email stays private.</span>
+        <div>
+          <button
+            onClick={blockUser}
+            disabled={connectionState !== "connected"}
+          >
+            Block @{otherUsername}
+          </button>
+          <button
+            onClick={reportUser}
+            disabled={connectionState !== "connected"}
+          >
+            Report user
+          </button>
+        </div>
+      </section>
       <footer className="foot">
         <span>Be kind and respectful.</span>
+        <span>
+          <i /> People online now
+        </span>
+        <span>Report a problem&nbsp; ↗</span>
       </footer>
       {showAccount ? (
         <div className="modal-backdrop" role="presentation">
@@ -698,14 +626,14 @@ function App() {
             >
               ×
             </button>
-            <p className="eyebrow">Your profile</p>
-            <h2>Choose a display name</h2>
+            <p className="eyebrow">Private account</p>
+            <h2>Create your profile</h2>
             <p className="modal-copy">
-              This is the only name other people see. Camera and microphone
-              permission is requested only when you start a video call.
+              People see your username only. Your email is never shared. Camera
+              and microphone permission is requested only for your video call.
             </p>
             <label>
-              Display name
+              Username
               <input
                 value={accountForm.username}
                 onChange={(event) =>
@@ -716,11 +644,23 @@ function App() {
                 }
                 maxLength={24}
                 required
-                placeholder="Your name"
+                placeholder="your_name"
+              />
+            </label>
+            <label>
+              Email
+              <input
+                type="email"
+                value={accountForm.email}
+                onChange={(event) =>
+                  setAccountForm({ ...accountForm, email: event.target.value })
+                }
+                required
+                placeholder="you@example.com"
               />
             </label>
             <button className="save-account" type="submit">
-              Save display name
+              Save private profile
             </button>
           </form>
         </div>
