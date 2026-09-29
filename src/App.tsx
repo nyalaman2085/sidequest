@@ -1,13 +1,19 @@
 import { useEffect, useRef, useState } from "react";
 import "./App.css";
 
-type ConnectionState = "idle" | "searching" | "connected";
+type ConnectionState =
+  | "idle"
+  | "requesting-media"
+  | "searching"
+  | "connecting"
+  | "connected"
+  | "error";
 type ChatMessage = {
   id: string;
   text: string;
   sender: "you" | "other";
 };
-type Account = { username: string; email: string };
+type Account = { username: string };
 
 const icebreakers = [
   "What is something small that made you smile today?",
@@ -29,13 +35,18 @@ function App() {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [icebreakerIndex, setIcebreakerIndex] = useState(0);
   const [account, setAccount] = useState<Account | null>(() => {
-    const saved = localStorage.getItem("sidequest-account");
-    return saved ? (JSON.parse(saved) as Account) : null;
+    try {
+      const saved = localStorage.getItem("sidequest-account");
+      if (!saved) return null;
+      const parsed = JSON.parse(saved) as { username?: unknown };
+      return typeof parsed.username === "string"
+        ? { username: parsed.username }
+        : null;
+    } catch {
+      return null;
+    }
   });
-  const [accountForm, setAccountForm] = useState<Account>({
-    username: "",
-    email: "",
-  });
+  const [accountForm, setAccountForm] = useState<Account>({ username: "" });
   const [showAccount, setShowAccount] = useState(false);
   const [theme, setTheme] = useState<"dark" | "light">(
     () =>
@@ -52,6 +63,10 @@ function App() {
   const streamRef = useRef<MediaStream | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const peerRef = useRef<RTCPeerConnection | null>(null);
+  const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
+  const disconnectTimerRef = useRef<number | null>(null);
+  const intentionalCloseRef = useRef(false);
+  const mediaRequestRef = useRef(0);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({
@@ -65,50 +80,15 @@ function App() {
     localStorage.setItem("sidequest-theme", theme);
   }, [theme]);
 
-  useEffect(() => {
-    let active = true;
-    navigator.mediaDevices
-      ?.getUserMedia({
-        video: {
-          width: { ideal: 1280, max: 1920 },
-          height: { ideal: 720, max: 1080 },
-          frameRate: { ideal: 30, max: 30 },
-        },
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-          channelCount: 1,
-          sampleRate: 48000,
-        },
-      })
-      .then(async (stream) => {
-        if (!active) return stream.getTracks().forEach((track) => track.stop());
-        streamRef.current = stream;
-        const microphone = stream.getAudioTracks()[0];
-        if (microphone) {
-          microphone.contentHint = "speech";
-          await microphone
-            .applyConstraints({
-              echoCancellation: true,
-              noiseSuppression: true,
-              autoGainControl: true,
-              channelCount: 1,
-            })
-            .catch(() => undefined);
-        }
-        if (previewRef.current) previewRef.current.srcObject = stream;
-      })
-      .catch(() =>
-        setNotice("Camera access is off. You can still browse the lobby."),
-      );
-    return () => {
-      active = false;
-      streamRef.current?.getTracks().forEach((track) => track.stop());
+  useEffect(
+    () => () => {
+      if (disconnectTimerRef.current) window.clearTimeout(disconnectTimerRef.current);
       peerRef.current?.close();
       socketRef.current?.close();
-    };
-  }, []);
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+    },
+    [],
+  );
 
   useEffect(() => {
     if (connectionState !== "connected") return;
@@ -120,116 +100,152 @@ function App() {
   }, [connectionState]);
 
   const closePeer = () => {
-    peerRef.current?.close();
+    if (disconnectTimerRef.current) window.clearTimeout(disconnectTimerRef.current);
+    disconnectTimerRef.current = null;
+    pendingCandidatesRef.current = [];
+    const peer = peerRef.current;
     peerRef.current = null;
+    if (peer) {
+      peer.onicecandidate = null;
+      peer.ontrack = null;
+      peer.onconnectionstatechange = null;
+      peer.close();
+    }
     if (remoteRef.current) remoteRef.current.srcObject = null;
   };
 
-  const leaveCurrentMatch = () => {
+  const closeSocket = (notify = true) => {
     closePeer();
     const socket = socketRef.current;
     socketRef.current = null;
-    if (socket?.readyState === WebSocket.OPEN) {
+    intentionalCloseRef.current = true;
+    if (notify && socket?.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify({ type: "leave" }));
     }
     socket?.close();
+    window.setTimeout(() => (intentionalCloseRef.current = false), 0);
   };
 
-  const openSearch = () => {
-    leaveCurrentMatch();
+  const acquireMedia = async () => {
+    if (streamRef.current?.getTracks().some((track) => track.readyState === "live")) return;
+    if (!navigator.mediaDevices?.getUserMedia) throw new Error("Media devices are unavailable in this browser.");
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 1280, max: 1920 }, height: { ideal: 720, max: 1080 }, frameRate: { ideal: 30, max: 30 } },
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1, sampleRate: 48000 },
+    });
+    stream.getAudioTracks().forEach((track) => { track.enabled = !isMuted; });
+    stream.getVideoTracks().forEach((track) => { track.enabled = !isCameraOff; });
+    const microphone = stream.getAudioTracks()[0];
+    if (microphone) {
+      microphone.contentHint = "speech";
+      await microphone.applyConstraints({ echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 }).catch(() => undefined);
+    }
+    streamRef.current = stream;
+    if (previewRef.current) previewRef.current.srcObject = stream;
+  };
+
+  const openSearch = (statusNotice?: string) => {
+    closeSocket();
     setConnectionState("searching");
     setSessionTime(0);
     setChatMessages([]);
-    setNotice("Looking for another person...");
-    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-    const socket = new WebSocket(`${protocol}://${window.location.host}/ws`);
-    socketRef.current = socket;
-    socket.onopen = () =>
-      socket.send(
-        JSON.stringify({
-          type: "join",
-          username: account?.username || "Guest",
-        }),
-      );
-    socket.onmessage = async (event) => {
-      const message = JSON.parse(event.data) as {
-        type: string;
-        payload?: unknown;
+    setOtherUsername("Someone new");
+    setNotice(statusNotice || "Looking for another person...");
+    try {
+      const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+      const socket = new WebSocket(`${protocol}://${window.location.host}/ws`);
+      socketRef.current = socket;
+      socket.onopen = () => {
+        if (socket !== socketRef.current) return;
+        socket.send(JSON.stringify({ type: "join", username: account?.username || "Guest" }));
       };
-      if (message.type === "matched") {
-        const match = message.payload as {
-          initiator?: boolean;
-          otherUsername?: string;
-          username?: string;
-        };
-        setOtherUsername(
-          match.otherUsername || match.username || "Someone new",
-        );
-        setConnectionState("connected");
-        setNotice("You are live. Say hello.");
-        setChatMessages([]);
-        const peer = makePeer(socket);
-        peerRef.current = peer;
-        if ((message.payload as { initiator?: boolean })?.initiator) {
-          const offer = await peer.createOffer();
-          await peer.setLocalDescription(offer);
-          socket.send(JSON.stringify({ type: "offer", payload: offer }));
+      socket.onmessage = async (event) => {
+        if (socket !== socketRef.current) return;
+        try {
+          const message = JSON.parse(event.data) as { type: string; payload?: unknown };
+          if (message.type === "matched") {
+            if (connectionStateRef.current !== "searching") return;
+            const match = message.payload as { initiator?: boolean; otherUsername?: string; username?: string };
+            setOtherUsername(match.otherUsername || match.username || "Someone new");
+            setConnectionState("connecting");
+            setNotice("Match found. Connecting...");
+            setChatMessages([]);
+            const peer = makePeer(socket);
+            peerRef.current = peer;
+            if (match.initiator) {
+              const offer = await peer.createOffer();
+              await peer.setLocalDescription(offer);
+              if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "offer", payload: peer.localDescription }));
+            }
+          } else if (message.type === "offer") {
+            const peer = peerRef.current ?? makePeer(socket);
+            peerRef.current = peer;
+            await peer.setRemoteDescription(message.payload as RTCSessionDescriptionInit);
+            for (const candidate of pendingCandidatesRef.current) await peer.addIceCandidate(candidate);
+            pendingCandidatesRef.current = [];
+            const answer = await peer.createAnswer();
+            await peer.setLocalDescription(answer);
+            if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "answer", payload: peer.localDescription }));
+          } else if (message.type === "answer") {
+            const peer = peerRef.current;
+            if (peer) {
+              await peer.setRemoteDescription(message.payload as RTCSessionDescriptionInit);
+              for (const candidate of pendingCandidatesRef.current) await peer.addIceCandidate(candidate);
+              pendingCandidatesRef.current = [];
+            }
+          } else if (message.type === "candidate") {
+            const candidate = message.payload as RTCIceCandidateInit;
+            if (peerRef.current?.remoteDescription) await peerRef.current.addIceCandidate(candidate);
+            else pendingCandidatesRef.current.push(candidate);
+          } else if (message.type === "partner-left") {
+            closePeer();
+            setConnectionState("idle");
+            setChatMessages([]);
+            setNotice("That person left. Find someone else?");
+            setOtherUsername("Someone new");
+          } else if (message.type === "chat" && message.payload && typeof message.payload === "object") {
+            const chat = message.payload as { id?: string; text?: string };
+            if (!chat.id || !chat.text) return;
+            setChatMessages((messages) => [...messages, { id: chat.id as string, text: chat.text as string, sender: "other" }]);
+          }
+        } catch {
+          closePeer();
+          setConnectionState("error");
+          setNotice("Could not establish the call. Try again.");
+          socket.close();
         }
-      }
-      if (message.type === "offer") {
-        const peer = peerRef.current ?? makePeer(socket);
-        peerRef.current = peer;
-        await peer.setRemoteDescription(
-          message.payload as RTCSessionDescriptionInit,
-        );
-        const answer = await peer.createAnswer();
-        await peer.setLocalDescription(answer);
-        socket.send(JSON.stringify({ type: "answer", payload: answer }));
-      }
-      if (message.type === "answer")
-        await peerRef.current?.setRemoteDescription(
-          message.payload as RTCSessionDescriptionInit,
-        );
-      if (message.type === "candidate")
-        await peerRef.current?.addIceCandidate(
-          message.payload as RTCIceCandidateInit,
-        );
-      if (message.type === "partner-left") {
+      };
+      socket.onclose = () => {
+        if (socket !== socketRef.current) return;
+        socketRef.current = null;
+        if (intentionalCloseRef.current) return;
         closePeer();
-        setConnectionState("idle");
-        setChatMessages([]);
-        setNotice("That person left. Find someone else?");
-        setOtherUsername("Someone new");
-      }
-      if (
-        message.type === "chat" &&
-        message.payload &&
-        typeof message.payload === "object"
-      ) {
-        const chat = message.payload as { id?: string; text?: string };
-        if (!chat.id || !chat.text) return;
-        const { id, text } = chat;
-        setChatMessages((messages) => [
-          ...messages,
-          {
-            id,
-            text,
-            sender: "other",
-          },
-        ]);
-      }
-    };
-    socket.onerror = () => {
-      setConnectionState("idle");
-      setNotice("The lobby is offline. Run npm run dev and try again.");
-    };
+        setConnectionState("error");
+        setNotice("The lobby connection ended. Try again.");
+      };
+      socket.onerror = () => {
+        if (socket !== socketRef.current) return;
+        closePeer();
+        setConnectionState("error");
+        setNotice("The lobby is unavailable. Check your connection and try again.");
+        socket.close();
+      };
+    } catch {
+      setConnectionState("error");
+      setNotice("Could not connect to the lobby. Try again.");
+    }
   };
+
+  const connectionStateRef = useRef(connectionState);
+  useEffect(() => {
+    connectionStateRef.current = connectionState;
+  }, [connectionState]);
 
   const saveAccount = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const username = accountForm.username.trim().replace(/\s+/g, " ");
-    if (!username || !accountForm.email.includes("@")) return;
-    const nextAccount = { username, email: accountForm.email.trim() };
+    if (!username) return;
+    const nextAccount = { username };
     setAccount(nextAccount);
     localStorage.setItem("sidequest-account", JSON.stringify(nextAccount));
     setShowAccount(false);
@@ -261,15 +277,28 @@ function App() {
       setNotice("Create a private profile before joining the lobby.");
       return;
     }
-    const socket = socketRef.current;
-    if (socket?.readyState === WebSocket.OPEN) {
-      setConnectionState("searching");
-      setSessionTime(0);
-      setNotice("Looking for another person...");
-      socket.send(JSON.stringify({ type: "join" }));
-      return;
-    }
-    openSearch();
+    if (["requesting-media", "searching", "connecting", "connected"].includes(connectionState)) return;
+    setConnectionState("requesting-media");
+    const requestId = ++mediaRequestRef.current;
+    setNotice("Allow camera and microphone access to start a video chat.");
+    void acquireMedia()
+      .then(() => {
+        if (requestId === mediaRequestRef.current) openSearch();
+        else {
+          streamRef.current?.getTracks().forEach((track) => track.stop());
+          streamRef.current = null;
+          if (previewRef.current) previewRef.current.srcObject = null;
+        }
+      })
+      .catch((error: unknown) => {
+        if (requestId !== mediaRequestRef.current) return;
+        const name = error instanceof DOMException ? error.name : "";
+        const message = name === "NotAllowedError" || name === "PermissionDeniedError"
+          ? "Camera or microphone permission was denied. You can continue without video."
+          : name === "NotFoundError" ? "No camera or microphone was found. You can continue without video."
+            : "Camera or microphone is unavailable. You can continue without video.";
+        openSearch(message);
+      });
   };
 
   const makePeer = (socket: WebSocket) => {
@@ -285,11 +314,29 @@ function App() {
         JSON.stringify({ type: "candidate", payload: event.candidate }),
       );
     peer.onconnectionstatechange = () => {
+      if (peer !== peerRef.current) return;
       if (peer.connectionState === "connected") {
+        if (disconnectTimerRef.current) window.clearTimeout(disconnectTimerRef.current);
+        disconnectTimerRef.current = null;
+        setConnectionState("connected");
         setNotice("Video and clear voice are connected.");
       }
-      if (["failed", "disconnected"].includes(peer.connectionState)) {
-        setNotice("Connection is unstable. Try Next person.");
+      if (peer.connectionState === "disconnected" && !disconnectTimerRef.current) {
+        setNotice("Connection interrupted. Trying to reconnect...");
+        disconnectTimerRef.current = window.setTimeout(() => {
+          if (peer === peerRef.current && peer.connectionState === "disconnected") {
+            closePeer();
+            closeSocket();
+            setConnectionState("error");
+            setNotice("The call disconnected. Find someone to try again.");
+          }
+        }, 5000);
+      }
+      if (peer.connectionState === "failed") {
+        closePeer();
+        closeSocket();
+        setConnectionState("error");
+        setNotice("The call could not connect. Check your network and try again.");
       }
     };
     peer
@@ -311,16 +358,36 @@ function App() {
   };
 
   const nextPerson = () => {
+    if (connectionState !== "connected") return;
     closePeer();
     const socket = socketRef.current;
     if (socket?.readyState === WebSocket.OPEN) {
       setConnectionState("searching");
       setSessionTime(0);
+      setChatMessages([]);
+      setOtherUsername("Someone new");
       setNotice("Looking for another person...");
       socket.send(JSON.stringify({ type: "skip" }));
-      return;
+    } else {
+      openSearch();
     }
-    openSearch();
+  };
+
+  const exitCall = () => {
+    closeSocket();
+    setConnectionState("idle");
+    setSessionTime(0);
+    setChatMessages([]);
+    setChatInput("");
+    setOtherUsername("Someone new");
+    setNotice("Call ended. Find someone when you are ready.");
+  };
+
+  const cancelSearch = () => {
+    mediaRequestRef.current += 1;
+    closeSocket();
+    setConnectionState("idle");
+    setNotice("Search cancelled.");
   };
 
   const toggleMute = () => {
@@ -379,8 +446,8 @@ function App() {
           </button>
           <button
             className="account-button"
-            onClick={() => {
-              setAccountForm(account || { username: "", email: "" });
+          onClick={() => {
+              setAccountForm(account || { username: "" });
               setShowAccount(true);
             }}
           >
@@ -468,17 +535,30 @@ function App() {
         </div>
         <button
           className="primary-action"
-          onClick={connectionState === "connected" ? nextPerson : findSomeone}
+          onClick={connectionState === "connected"
+            ? nextPerson
+            : connectionState === "searching" || connectionState === "requesting-media"
+              ? cancelSearch
+              : connectionState === "connecting"
+                ? exitCall
+                : findSomeone}
         >
           <span>
             {connectionState === "connected"
               ? "Next person"
               : connectionState === "searching"
-                ? "Keep looking"
-                : "Find someone"}
+                ? "Cancel search"
+                : connectionState === "requesting-media"
+                  ? "Cancel"
+                  : connectionState === "connecting"
+                    ? "Connecting..."
+                    : "Find someone"}
           </span>
           <b>↗</b>
         </button>
+        {connectionState === "connected" || connectionState === "connecting" ? (
+          <button className="skip-action" onClick={exitCall}>Exit call</button>
+        ) : null}
       </section>
       <section className="chat-panel">
         <div className="chat-heading">
@@ -576,8 +656,8 @@ function App() {
             <p className="eyebrow">Private account</p>
             <h2>Create your profile</h2>
             <p className="modal-copy">
-              People see your username only. Your email is never shared. Camera
-              and microphone permission is requested only for your video call.
+              People see your username only. Camera and microphone permission
+              is requested when you join a video chat.
             </p>
             <label>
               Username
@@ -592,18 +672,6 @@ function App() {
                 maxLength={24}
                 required
                 placeholder="your_name"
-              />
-            </label>
-            <label>
-              Email
-              <input
-                type="email"
-                value={accountForm.email}
-                onChange={(event) =>
-                  setAccountForm({ ...accountForm, email: event.target.value })
-                }
-                required
-                placeholder="you@example.com"
               />
             </label>
             <button className="save-account" type="submit">
