@@ -25,6 +25,66 @@ const icebreakers = [
 
 const iceServers = [{ urls: "stun:stun.l.google.com:19302" }];
 
+const opusParameters = {
+  stereo: "1",
+  useinbandfec: "1",
+  usedtx: "0",
+  maxaveragebitrate: "128000",
+};
+
+function configureOpusSdp(description: RTCSessionDescriptionInit): RTCSessionDescriptionInit {
+  if (!description.sdp) return description;
+
+  const lines = description.sdp.split(/\r?\n/);
+  const trailingNewline = lines.at(-1) === "";
+  if (trailingNewline) lines.pop();
+  let inAudioSection = false;
+  const opusPayloads = new Set<string>();
+  const fmtpLines = new Map<string, number>();
+
+  lines.forEach((line, index) => {
+    if (line.startsWith("m=")) inAudioSection = line.startsWith("m=audio ");
+    if (!inAudioSection) return;
+    const opus = line.match(/^a=rtpmap:(\d+)\s+opus\/48000(?:\/\d+)?/i);
+    if (opus) opusPayloads.add(opus[1]);
+    const fmtp = line.match(/^a=fmtp:(\d+)\s*(.*)$/i);
+    if (fmtp) fmtpLines.set(fmtp[1], index);
+  });
+
+  if (!opusPayloads.size) return description;
+  const insertions: Array<{ index: number; line: string }> = [];
+  for (const payload of opusPayloads) {
+    const fmtpIndex = fmtpLines.get(payload);
+    if (fmtpIndex === undefined) {
+      const rtpmapIndex = lines.findIndex((line) => new RegExp(`^a=rtpmap:${payload}\\s`, "i").test(line));
+      if (rtpmapIndex >= 0) insertions.push({ index: rtpmapIndex + 1, line: `a=fmtp:${payload} ${Object.entries(opusParameters).map(([key, value]) => `${key}=${value}`).join(";")}` });
+      continue;
+    }
+    const match = lines[fmtpIndex].match(/^(a=fmtp:\d+\s*)(.*)$/i);
+    if (!match) continue;
+    const parameters = new Map<string, string>();
+    match[2].split(";").map((part) => part.trim()).filter(Boolean).forEach((part) => {
+      const [key, ...value] = part.split("=");
+      parameters.set(key.trim().toLowerCase(), value.join("=").trim());
+    });
+    Object.entries(opusParameters).forEach(([key, value]) => parameters.set(key, value));
+    lines[fmtpIndex] = `${match[1]}${Array.from(parameters, ([key, value]) => `${key}=${value}`).join(";")}`;
+  }
+  insertions.sort((a, b) => b.index - a.index).forEach(({ index, line }) => lines.splice(index, 0, line));
+  return { ...description, sdp: `${lines.join("\r\n")}${trailingNewline ? "\r\n" : ""}` };
+}
+
+async function setLocalDescriptionWithOpus(peer: RTCPeerConnection, description: RTCSessionDescriptionInit) {
+  const configured = configureOpusSdp(description);
+  try {
+    await peer.setLocalDescription(configured);
+  } catch (error) {
+    if (configured.sdp === description.sdp) throw error;
+    // Some browser versions reject modified SDP; retry with the browser's original SDP.
+    await peer.setLocalDescription(description);
+  }
+}
+
 function App() {
   const [connectionState, setConnectionState] =
     useState<ConnectionState>("idle");
@@ -176,7 +236,13 @@ function App() {
     if (streamRef.current?.getTracks().some((track) => track.readyState === "live")) return;
     if (!navigator.mediaDevices?.getUserMedia) throw new Error("Media devices are unavailable in this browser.");
     const video: MediaTrackConstraints = { width: { ideal: 1280, max: 1920 }, height: { ideal: 720, max: 1080 }, frameRate: { ideal: 30, max: 30 } };
-    const audio: MediaTrackConstraints = { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1, sampleRate: 48000 };
+    const audio: MediaTrackConstraints = {
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+      channelCount: { ideal: 2 },
+      sampleRate: { ideal: 48000 },
+    };
     let stream: MediaStream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({ video, audio });
@@ -196,7 +262,13 @@ function App() {
     const microphone = stream.getAudioTracks()[0];
     if (microphone) {
       microphone.contentHint = "speech";
-      await microphone.applyConstraints({ echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 }).catch(() => undefined);
+      await microphone.applyConstraints({
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        channelCount: { ideal: 2 },
+        sampleRate: { ideal: 48000 },
+      }).catch(() => undefined);
     }
     if (requestId !== mediaRequestRef.current) {
       stream.getTracks().forEach((track) => track.stop());
@@ -287,7 +359,7 @@ function App() {
             if (match.initiator) {
               const offer = await peer.createOffer();
               if (socket !== socketRef.current || peer !== peerRef.current) return;
-              await peer.setLocalDescription(offer);
+              await setLocalDescriptionWithOpus(peer, offer);
               if (socket !== socketRef.current || peer !== peerRef.current) return;
               if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "offer", payload: peer.localDescription }));
             }
@@ -301,7 +373,7 @@ function App() {
             pendingCandidatesRef.current = [];
             const answer = await peer.createAnswer();
             if (socket !== socketRef.current || peer !== peerRef.current) return;
-            await peer.setLocalDescription(answer);
+            await setLocalDescriptionWithOpus(peer, answer);
             if (socket !== socketRef.current || peer !== peerRef.current) return;
             if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "answer", payload: peer.localDescription }));
           } else if (message.type === "answer") {
@@ -437,6 +509,18 @@ function App() {
       .forEach((track) =>
         peer.addTrack(track, streamRef.current as MediaStream),
       );
+    try {
+      const audioCodecs = RTCRtpSender.getCapabilities?.("audio")?.codecs;
+      const opusCodecs = audioCodecs?.filter((codec) => codec.mimeType.toLowerCase() === "audio/opus");
+      if (opusCodecs?.length) {
+        const preferredCodecs = [...opusCodecs, ...(audioCodecs ?? []).filter((codec) => codec.mimeType.toLowerCase() !== "audio/opus")];
+        peer.getTransceivers()
+          .filter((transceiver) => transceiver.sender.track?.kind === "audio")
+          .forEach((transceiver) => transceiver.setCodecPreferences?.(preferredCodecs));
+      }
+    } catch {
+      // Codec preference APIs are not available in every supported browser.
+    }
     peer.onicecandidate = (event) => {
       if (event.candidate && peer === peerRef.current && socket === socketRef.current && socket.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify({ type: "candidate", payload: event.candidate }));
@@ -496,6 +580,7 @@ function App() {
           : new MediaStream());
         if (!event.streams[0] && !stream.getTracks().includes(event.track)) stream.addTrack(event.track);
         remoteRef.current.srcObject = stream;
+        remoteRef.current.muted = false;
         remoteRef.current.volume = 1;
       }
     };
@@ -690,7 +775,7 @@ function App() {
               <div className={`connection-pill ${connectionState}`}><i />{connectionState === "connected" ? "Connected" : connectionState === "connecting" ? "Match found · connecting" : "Finding a match"}</div>
             </div>
             <div className={`call-stage ${connectionState}`}>
-              <video className="remote-video" ref={remoteRef} autoPlay playsInline aria-label="Your conversation partner" />
+              <video className="remote-video" ref={remoteRef} autoPlay muted={false} playsInline aria-label="Your conversation partner" />
               {connectionState !== "connected" ? <div className="call-overlay" aria-live="polite">
                 <div className={`search-symbol ${connectionState === "searching" ? "is-searching" : ""}`}>{connectionState === "searching" ? <span>✳</span> : connectionState === "connecting" ? <span>↗</span> : <span>✳</span>}</div>
                 <h2>{statusTitle}</h2><p>{connectionState === "searching" ? "Hang tight. We’re looking for someone to talk with." : connectionState === "connecting" ? "Your match is here. Connecting your video now…" : notice}</p>
