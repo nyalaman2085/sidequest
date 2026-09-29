@@ -3,6 +3,69 @@ import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
 
+const MAX_PAYLOAD_BYTES = 64 * 1024;
+const MAX_CONNECTIONS = 500;
+const MAX_WAITING = 200;
+const RATE_WINDOW_MS = 10_000;
+const RATE_LIMITS = { signaling: 120, chat: 12, control: 8 } as const;
+const HEARTBEAT_INTERVAL_MS = 30_000;
+
+type RateCategory = keyof typeof RATE_LIMITS;
+type RateWindow = { startedAt: number; count: number };
+
+const configuredOrigins = new Set(
+  (process.env.SIDEQUEST_ALLOWED_ORIGINS || "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean)
+    .flatMap((origin) => {
+      try {
+        return [new URL(origin).origin];
+      } catch {
+        return [];
+      }
+    }),
+);
+
+function isAllowedOrigin(origin: string | undefined) {
+  if (!origin || origin === "null") return false;
+  try {
+    const url = new URL(origin);
+    if (configuredOrigins.has(url.origin)) return true;
+    if (process.env.NODE_ENV === "production") return false;
+    if (!(["http:", "https:"].includes(url.protocol)) || url.port !== "4173") return false;
+    if (["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) return true;
+    const octets = url.hostname.split(".").map(Number);
+    if (octets.length !== 4 || octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)) return false;
+    return octets[0] === 10 ||
+      (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) ||
+      (octets[0] === 192 && octets[1] === 168);
+  } catch {
+    return false;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isMatchId(value: unknown): value is string {
+  return typeof value === "string" && /^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i.test(value);
+}
+
+function isSessionDescription(value: unknown, type: "offer" | "answer") {
+  return isRecord(value) && value.type === type &&
+    typeof value.sdp === "string" && value.sdp.length > 0 && value.sdp.length <= 48 * 1024;
+}
+
+function isIceCandidate(value: unknown) {
+  if (!isRecord(value) || typeof value.candidate !== "string" || value.candidate.length > 4096) return false;
+  if (value.sdpMid !== undefined && value.sdpMid !== null && (typeof value.sdpMid !== "string" || value.sdpMid.length > 128)) return false;
+  if (value.sdpMLineIndex !== undefined && value.sdpMLineIndex !== null && (!Number.isInteger(value.sdpMLineIndex) || (value.sdpMLineIndex as number) < 0)) return false;
+  return value.usernameFragment === undefined || value.usernameFragment === null ||
+    (typeof value.usernameFragment === "string" && value.usernameFragment.length <= 256);
+}
+
 const app = express();
 app.use(express.json());
 app.use((_request, response, next) => {
@@ -10,12 +73,21 @@ app.use((_request, response, next) => {
   next();
 });
 const httpServer = createServer(app);
-const webSocketServer = new WebSocketServer({ server: httpServer });
+const webSocketServer = new WebSocketServer({
+  server: httpServer,
+  maxPayload: MAX_PAYLOAD_BYTES,
+  verifyClient: ({ origin }, done) => {
+    if (isAllowedOrigin(origin)) done(true);
+    else done(false, 403, "Forbidden");
+  },
+});
 const waiting: WebSocket[] = [];
 const partnerOf = new Map<WebSocket, WebSocket>();
 const usernameOf = new Map<WebSocket, string>();
 const matchIdOf = new Map<WebSocket, string>();
 const chatIdsOf = new Map<WebSocket, Set<string>>();
+const rateWindowsOf = new Map<WebSocket, Map<RateCategory, RateWindow>>();
+const aliveSockets = new WeakSet<WebSocket>();
 const reports: { username: string; reason: string }[] = [];
 
 app.get("/health", (_request, response) =>
@@ -33,10 +105,47 @@ app.post("/report", (request, response) => {
 
 const send = (socket: WebSocket, type: string, payload?: unknown) => {
   if (socket.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify({ type, payload }));
-    return true;
+    try {
+      socket.send(JSON.stringify({ type, payload }));
+      return true;
+    } catch {
+      return false;
+    }
   }
   return false;
+};
+
+const sendSignal = (socket: WebSocket, type: string, matchId: string, payload: unknown) => {
+  if (socket.readyState !== WebSocket.OPEN) return false;
+  try {
+    socket.send(JSON.stringify({ type, matchId, payload }));
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const hasOnlyKeys = (message: Record<string, unknown>, keys: string[]) =>
+  Object.keys(message).every((key) => keys.includes(key));
+
+const allowMessage = (socket: WebSocket, category: RateCategory) => {
+  const now = Date.now();
+  let windows = rateWindowsOf.get(socket);
+  if (!windows) {
+    windows = new Map();
+    rateWindowsOf.set(socket, windows);
+  }
+  let window = windows.get(category);
+  if (!window || now - window.startedAt >= RATE_WINDOW_MS) {
+    window = { startedAt: now, count: 0 };
+    windows.set(category, window);
+  }
+  window.count += 1;
+  return window.count <= RATE_LIMITS[category];
+};
+
+const rejectProtocol = (socket: WebSocket, code = 1008) => {
+  if (socket.readyState === WebSocket.OPEN) socket.close(code, "Invalid request");
 };
 
 const removeFromQueue = (socket: WebSocket) => {
@@ -45,7 +154,7 @@ const removeFromQueue = (socket: WebSocket) => {
 };
 
 const addToQueue = (socket: WebSocket) => {
-  if (socket.readyState === WebSocket.OPEN && !waiting.includes(socket))
+  if (socket.readyState === WebSocket.OPEN && !waiting.includes(socket) && waiting.length < MAX_WAITING)
     waiting.push(socket);
 };
 
@@ -62,33 +171,60 @@ const takeWaitingSocket = () => {
 };
 
 webSocketServer.on("connection", (socket) => {
-  socket.on("message", (raw) => {
-    let message: {
-      type?: unknown;
-      username?: string;
-      payload?: unknown;
-    };
+  socket.on("error", () => disconnect(socket));
+  if (webSocketServer.clients.size > MAX_CONNECTIONS) {
+    socket.close(1013, "Server busy");
+    return;
+  }
+
+  aliveSockets.add(socket);
+  socket.on("pong", () => aliveSockets.add(socket));
+  socket.on("message", (raw, isBinary) => {
+    if (isBinary) {
+      rejectProtocol(socket, 1003);
+      return;
+    }
+    let parsed: unknown;
     try {
-      message = JSON.parse(raw.toString()) as typeof message;
+      parsed = JSON.parse(raw.toString());
     } catch {
-      socket.close(1007, "Invalid message");
+      rejectProtocol(socket, 1007);
       return;
     }
-    if (!message || typeof message !== "object" || typeof message.type !== "string") {
-      socket.close(1007, "Invalid message");
+    if (!isRecord(parsed) || typeof parsed.type !== "string") {
+      rejectProtocol(socket);
       return;
     }
-    if (message.type === "join") {
+    const message = parsed;
+    const type = message.type;
+    if (!["join", "leave", "skip", "offer", "answer", "candidate", "chat"].includes(type)) {
+      rejectProtocol(socket);
+      return;
+    }
+    const category: RateCategory = type === "chat" ? "chat" :
+      ["offer", "answer", "candidate"].includes(type) ? "signaling" : "control";
+    if (!allowMessage(socket, category)) {
+      socket.close(1008, "Rate limit exceeded");
+      return;
+    }
+
+    if (type === "join") {
+      if (!hasOnlyKeys(message, ["type", "username"]) ||
+        (message.username !== undefined && (typeof message.username !== "string" || message.username.length > 64))) {
+        rejectProtocol(socket);
+        return;
+      }
       if (partnerOf.has(socket) || waiting.includes(socket)) return;
-      usernameOf.set(
-        socket,
-        typeof message.username === "string"
-          ? message.username.slice(0, 32) || "Guest"
-          : "Guest",
-      );
+      usernameOf.set(socket, typeof message.username === "string" ? message.username.slice(0, 32).trim() || "Guest" : "Guest");
       const partner = takeWaitingSocket();
-      if (!partner) addToQueue(socket);
-      else {
+      if (!partner) {
+        if (waiting.length >= MAX_WAITING) {
+          usernameOf.delete(socket);
+          socket.close(1013, "Lobby full");
+          return;
+        }
+        addToQueue(socket);
+      } else {
         const matchId = randomUUID();
         const chatIds = new Set<string>();
         partnerOf.set(socket, partner);
@@ -97,35 +233,51 @@ webSocketServer.on("connection", (socket) => {
         matchIdOf.set(partner, matchId);
         chatIdsOf.set(socket, chatIds);
         chatIdsOf.set(partner, chatIds);
-        send(socket, "matched", {
-          initiator: true,
-          otherUsername: usernameOf.get(partner) || "Guest",
-          matchId,
-        });
-        send(partner, "matched", {
-          initiator: false,
-          otherUsername: usernameOf.get(socket) || "Guest",
-          matchId,
-        });
+        send(socket, "matched", { initiator: true, otherUsername: usernameOf.get(partner) || "Guest", matchId });
+        send(partner, "matched", { initiator: false, otherUsername: usernameOf.get(socket) || "Guest", matchId });
       }
+      return;
     }
-    if (message.type === "leave") disconnect(socket);
-    if (message.type === "skip") {
+
+    if (type === "leave") {
+      if (!hasOnlyKeys(message, ["type"])) {
+        rejectProtocol(socket);
+        return;
+      }
+      disconnect(socket);
+      return;
+    }
+
+    if (type === "skip") {
+      if (!hasOnlyKeys(message, ["type"])) {
+        rejectProtocol(socket);
+        return;
+      }
       if (!usernameOf.has(socket)) return;
       disconnect(socket, true);
-      addToQueue(socket);
+      if (waiting.length >= MAX_WAITING) {
+        send(socket, "server-busy");
+        disconnect(socket);
+        socket.close(1013, "Lobby full");
+      } else addToQueue(socket);
+      return;
     }
-    if (message.type === "chat") {
+
+    if (type === "chat") {
+      if (!hasOnlyKeys(message, ["type", "payload"])) {
+        rejectProtocol(socket);
+        return;
+      }
       const partner = partnerOf.get(socket);
       const matchId = matchIdOf.get(socket);
-      const payload = message.payload as {
-        id?: unknown;
-        matchId?: unknown;
-        text?: unknown;
-      } | null;
-      const id = payload && typeof payload.id === "string" ? payload.id : "";
-      if (!partner || !matchId || payload?.matchId !== matchId) return;
-      if (!id || id.length > 64 || typeof payload?.text !== "string") {
+      const payload = message.payload;
+      if (!isRecord(payload) || !hasOnlyKeys(payload, ["id", "matchId", "text"])) {
+        rejectProtocol(socket);
+        return;
+      }
+      const id = isRecord(payload) && typeof payload.id === "string" ? payload.id : "";
+      if (!partner || !matchId || payload.matchId !== matchId) return;
+      if (!id || id.length > 64 || typeof payload.text !== "string") {
         send(socket, "chat-error", { id, matchId });
         return;
       }
@@ -153,17 +305,49 @@ webSocketServer.on("connection", (socket) => {
       send(socket, "chat-ack", { id, matchId });
       return;
     }
-    if (["offer", "answer", "candidate"].includes(message.type)) {
+
+    if (type === "offer" || type === "answer" || type === "candidate") {
+      if (!hasOnlyKeys(message, ["type", "matchId", "payload"]) || !isMatchId(message.matchId)) {
+        rejectProtocol(socket);
+        return;
+      }
       const partner = partnerOf.get(socket);
-      if (partner) send(partner, message.type, message.payload);
+      const matchId = matchIdOf.get(socket);
+      const validPayload = type === "offer" || type === "answer"
+        ? isSessionDescription(message.payload, type)
+        : isIceCandidate(message.payload);
+      if (!validPayload) {
+        rejectProtocol(socket);
+        return;
+      }
+      if (!partner || !matchId || message.matchId !== matchId) return;
+      if (!sendSignal(partner, type, matchId, message.payload)) disconnect(socket);
     }
   });
   socket.on("close", () => disconnect(socket));
-  socket.on("error", () => disconnect(socket));
 });
+
+const heartbeat = setInterval(() => {
+  for (const socket of webSocketServer.clients) {
+    if (!aliveSockets.has(socket)) {
+      disconnect(socket);
+      socket.terminate();
+      continue;
+    }
+    aliveSockets.delete(socket);
+    try {
+      socket.ping();
+    } catch {
+      disconnect(socket);
+      socket.terminate();
+    }
+  }
+}, HEARTBEAT_INTERVAL_MS);
+heartbeat.unref();
 
 function disconnect(socket: WebSocket, keepUsername = false) {
   removeFromQueue(socket);
+  if (!keepUsername) rateWindowsOf.delete(socket);
   const partner = partnerOf.get(socket);
   if (partner) {
     partnerOf.delete(socket);

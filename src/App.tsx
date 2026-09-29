@@ -235,7 +235,12 @@ function App() {
   const acquireMedia = async (requestId: number) => {
     if (streamRef.current?.getTracks().some((track) => track.readyState === "live")) return;
     if (!navigator.mediaDevices?.getUserMedia) throw new Error("Media devices are unavailable in this browser.");
-    const video: MediaTrackConstraints = { width: { ideal: 1280, max: 1920 }, height: { ideal: 720, max: 1080 }, frameRate: { ideal: 30, max: 30 } };
+    const video: MediaTrackConstraints = {
+      facingMode: { ideal: "user" },
+      width: { ideal: 1920, max: 1920 },
+      height: { ideal: 1080, max: 1080 },
+      frameRate: { ideal: 30, max: 30 },
+    };
     const audio: MediaTrackConstraints = {
       echoCancellation: true,
       noiseSuppression: true,
@@ -341,7 +346,7 @@ function App() {
         messageChain = messageChain.then(async () => {
         if (socket !== socketRef.current) return;
         try {
-          const message = JSON.parse(event.data) as { type: string; payload?: unknown };
+          const message = JSON.parse(event.data) as { type: string; matchId?: string; payload?: unknown };
           if (message.type === "matched") {
             if (!searchingRef.current) return;
             searchingRef.current = false;
@@ -361,10 +366,12 @@ function App() {
               if (socket !== socketRef.current || peer !== peerRef.current) return;
               await setLocalDescriptionWithOpus(peer, offer);
               if (socket !== socketRef.current || peer !== peerRef.current) return;
-              if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "offer", payload: peer.localDescription }));
+              if (socket.readyState === WebSocket.OPEN && matchIdRef.current) {
+                socket.send(JSON.stringify({ type: "offer", matchId: matchIdRef.current, payload: peer.localDescription }));
+              }
             }
           } else if (message.type === "offer") {
-            if (!activeMatchRef.current) return;
+            if (!activeMatchRef.current || message.matchId !== matchIdRef.current) return;
             const peer = peerRef.current ?? makePeer(socket);
             peerRef.current = peer;
             await peer.setRemoteDescription(message.payload as RTCSessionDescriptionInit);
@@ -375,9 +382,11 @@ function App() {
             if (socket !== socketRef.current || peer !== peerRef.current) return;
             await setLocalDescriptionWithOpus(peer, answer);
             if (socket !== socketRef.current || peer !== peerRef.current) return;
-            if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "answer", payload: peer.localDescription }));
+            if (socket.readyState === WebSocket.OPEN && matchIdRef.current) {
+              socket.send(JSON.stringify({ type: "answer", matchId: matchIdRef.current, payload: peer.localDescription }));
+            }
           } else if (message.type === "answer") {
-            if (!activeMatchRef.current) return;
+            if (!activeMatchRef.current || message.matchId !== matchIdRef.current) return;
             const peer = peerRef.current;
             if (peer) {
               await peer.setRemoteDescription(message.payload as RTCSessionDescriptionInit);
@@ -386,7 +395,7 @@ function App() {
               pendingCandidatesRef.current = [];
             }
           } else if (message.type === "candidate") {
-            if (!activeMatchRef.current) return;
+            if (!activeMatchRef.current || message.matchId !== matchIdRef.current) return;
             const candidate = message.payload as RTCIceCandidateInit;
             if (peerRef.current?.remoteDescription) await peerRef.current.addIceCandidate(candidate);
             else pendingCandidatesRef.current.push(candidate);
@@ -522,8 +531,8 @@ function App() {
       // Codec preference APIs are not available in every supported browser.
     }
     peer.onicecandidate = (event) => {
-      if (event.candidate && peer === peerRef.current && socket === socketRef.current && socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({ type: "candidate", payload: event.candidate }));
+      if (event.candidate && peer === peerRef.current && socket === socketRef.current && socket.readyState === WebSocket.OPEN && matchIdRef.current) {
+        socket.send(JSON.stringify({ type: "candidate", matchId: matchIdRef.current, payload: event.candidate }));
       }
     };
     const updateConnectionState = () => {
@@ -572,6 +581,31 @@ function App() {
         parameters.encodings ??= [{}];
         parameters.encodings[0].maxBitrate = 128000;
         void sender.setParameters(parameters).catch(() => undefined);
+      });
+    peer
+      .getSenders()
+      .filter((sender) => sender.track?.kind === "video")
+      .forEach((sender) => {
+        try {
+          const parameters = sender.getParameters();
+          if (!parameters.encodings.length) return;
+          parameters.encodings[0].maxBitrate = 2_500_000;
+          parameters.degradationPreference = "maintain-resolution";
+          void sender.setParameters(parameters).catch(() => {
+            // Retry the bitrate cap alone if a browser rejects degradationPreference.
+            try {
+              const fallback = sender.getParameters();
+              if (fallback.encodings.length) {
+                fallback.encodings[0].maxBitrate = 2_500_000;
+                void sender.setParameters(fallback).catch(() => undefined);
+              }
+            } catch {
+              // Sender parameter tuning is optional; keep the negotiated call working.
+            }
+          });
+        } catch {
+          // Sender parameter tuning is optional; keep the negotiated call working.
+        }
       });
     peer.ontrack = (event) => {
       if (remoteRef.current) {
