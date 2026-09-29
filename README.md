@@ -17,8 +17,8 @@ Sidequest is a simple random video chat app. It matches two people and connects 
 2. Open this project folder in VS Code.
 3. Run `npm install` in the terminal.
 4. Run `npm run dev`.
-5. Open `http://localhost:5173`.
-6. Click **Create account** and enter a username and email address.
+5. Open `http://localhost:4173`.
+6. Click **Your profile** and choose a username.
 7. Open the same URL in a second tab or browser and create another username.
 8. Allow camera and microphone access in both tabs.
 9. Click **Find someone** in both tabs.
@@ -27,6 +27,59 @@ Sidequest is a simple random video chat app. It matches two people and connects 
 12. Use **Icebreaker** for a quick friendly message suggestion.
 
 The health endpoint is available at `http://localhost:8787/health`.
+
+## Test camera and microphone from an iPad on your local network
+
+An iPad cannot use camera or microphone from the plain HTTP LAN address. Use a locally trusted HTTPS certificate for the Mac's LAN IP instead. The Vite server stays on port `4173`; its existing `/ws` and `/api` proxies continue forwarding to the local signaling server on port `8787`.
+
+### 1. Install mkcert and create a local certificate authority
+
+On the Mac, install Homebrew if it is not already installed, then run:
+
+```sh
+brew install mkcert
+mkcert -install
+mkdir -p certs
+```
+
+`mkcert -install` creates a local development CA and trusts it on the Mac. This CA is for local development only.
+
+### 2. Generate a certificate for the Mac's current LAN IP
+
+For a Mac connected over Wi-Fi, get its current address and generate a certificate/key pair:
+
+```sh
+export SIDEQUEST_LAN_IP="$(ipconfig getifaddr en0)"
+mkcert -key-file certs/sidequest-key.pem -cert-file certs/sidequest.pem "$SIDEQUEST_LAN_IP" localhost 127.0.0.1 ::1
+```
+
+Check the address with `echo "$SIDEQUEST_LAN_IP"`. If that variable is empty, find the Mac's Wi-Fi address in **System Settings → Wi-Fi → Details** and set it manually, for example `export SIDEQUEST_LAN_IP="192.168.29.4"`, then rerun the `mkcert` command. If the Mac's LAN IP changes, regenerate the certificate for the new IP.
+
+### 3. Trust the local CA on the iPad
+
+Find the CA certificate on the Mac:
+
+```sh
+mkcert -CAROOT
+```
+
+Transfer the `rootCA.pem` file from that directory to the iPad (for example, using AirDrop). Do **not** transfer `rootCA-key.pem`; the CA private key must remain on the Mac. On the iPad, open the transferred certificate and install its profile in **Settings → Profile Downloaded** (or **Settings → General → VPN & Device Management**). Then enable trust under **Settings → General → About → Certificate Trust Settings → Enable Full Trust for Root Certificates**. Apple requires manually installed root certificates to be explicitly trusted for SSL/TLS.
+
+### 4. Start Sidequest over HTTPS and open it on the iPad
+
+From the project directory on the Mac, run:
+
+```sh
+SIDEQUEST_DEV_CERT=certs/sidequest.pem SIDEQUEST_DEV_KEY=certs/sidequest-key.pem npm run dev
+```
+
+Keep the Mac and iPad on the same reachable Wi-Fi network, allow incoming connections to port `4173` in the Mac firewall, then open this URL in iPad Safari (replace the address if the Mac's LAN IP differs):
+
+```text
+https://192.168.29.4:4173
+```
+
+The certificate variables are optional. If either variable is unset or either file does not exist, Vite keeps its normal HTTP development mode at `http://localhost:4173`. When HTTPS is enabled, the browser uses WSS for `/ws`; Vite terminates TLS and proxies that connection to the existing local WebSocket server.
 
 ## Skills and technologies, in order
 
@@ -57,7 +110,7 @@ For a real public launch, add login, moderation, report storage, rate limiting, 
 
 ## Privacy
 
-The email is stored in the current browser only and is never sent to the matching server or another user. Only the username is sent for matching and displayed during a call. Camera and microphone access are requested by the browser for the call; the app does not upload recordings.
+No email is collected. The username is stored in the current browser and sent to the matching server for display during a call. Camera and microphone access are requested by the browser when you begin the device check; the app does not upload recordings.
 
 The call requests HD video up to 720p at 30 FPS and uses microphone echo cancellation, noise suppression, automatic gain control, and mono audio to reduce background noise and feedback.
 
