@@ -7,9 +7,11 @@
     "dev": "concurrently \"vite\" \"tsx watch server/index.ts\"",
     "dev:client": "vite",
     "dev:server": "tsx watch server/index.ts",
-    "build": "tsc -b && vite build",
+    "build:server": "tsc -p tsconfig.server.json",
+    "build": "tsc -b && npm run build:server && vite build",
     "lint": "oxlint src server",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "start": "NODE_ENV=production node server-dist/index.js"
   },
   "dependencies": {
     "express": "^5.2.1",

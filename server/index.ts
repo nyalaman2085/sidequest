@@ -68,13 +68,10 @@ function isIceCandidate(value: unknown) {
 
 const app = express();
 app.use(express.json());
-app.use((_request, response, next) => {
-  response.setHeader("Access-Control-Allow-Origin", "http://localhost:5173");
-  next();
-});
 const httpServer = createServer(app);
 const webSocketServer = new WebSocketServer({
   server: httpServer,
+  path: "/ws",
   maxPayload: MAX_PAYLOAD_BYTES,
   verifyClient: ({ origin }, done) => {
     if (isAllowedOrigin(origin)) done(true);
@@ -91,7 +88,7 @@ const aliveSockets = new WeakSet<WebSocket>();
 const reports: { username: string; reason: string }[] = [];
 
 app.get("/health", (_request, response) =>
-  response.json({ ok: true, waiting: waiting.length }),
+  response.status(200).json({ ok: true }),
 );
 app.post("/report", (request, response) => {
   const { username, reason } = request.body as {
@@ -196,7 +193,7 @@ webSocketServer.on("connection", (socket) => {
       return;
     }
     const message = parsed;
-    const type = message.type;
+    const type = message.type as string;
     if (!["join", "leave", "skip", "offer", "answer", "candidate", "chat"].includes(type)) {
       rejectProtocol(socket);
       return;
@@ -363,6 +360,20 @@ function disconnect(socket: WebSocket, keepUsername = false) {
   if (!keepUsername) usernameOf.delete(socket);
 }
 
-httpServer.listen(8787, () =>
-  console.log("Sidequest signaling server on http://localhost:8787"),
-);
+const isProduction = process.env.NODE_ENV === "production";
+const configuredPort = process.env.PORT === undefined
+  ? isProduction ? undefined : 8787
+  : Number(process.env.PORT);
+if (configuredPort === undefined) {
+  throw new Error("PORT must be set when running in production");
+}
+if (!Number.isInteger(configuredPort) || configuredPort < 1 || configuredPort > 65_535) {
+  throw new Error("PORT must be an integer between 1 and 65535");
+}
+const host = process.env.HOST?.trim() || "0.0.0.0";
+
+httpServer.listen(configuredPort, host, () => {
+  const address = httpServer.address();
+  const port = address && typeof address === "object" ? address.port : configuredPort;
+  console.log(`Sidequest signaling server listening on ${host}:${port}`);
+});
