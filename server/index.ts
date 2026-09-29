@@ -1,6 +1,8 @@
 import express from "express";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
 
 const MAX_PAYLOAD_BYTES = 64 * 1024;
@@ -68,6 +70,9 @@ function isIceCandidate(value: unknown) {
 
 const app = express();
 app.use(express.json());
+const serverDirectory = dirname(fileURLToPath(import.meta.url));
+const frontendDirectory = resolve(serverDirectory, "../dist");
+const frontendIndex = resolve(frontendDirectory, "index.html");
 const httpServer = createServer(app);
 const webSocketServer = new WebSocketServer({
   server: httpServer,
@@ -90,7 +95,7 @@ const reports: { username: string; reason: string }[] = [];
 app.get("/health", (_request, response) =>
   response.status(200).json({ ok: true }),
 );
-app.post("/report", (request, response) => {
+const reportHandler: express.RequestHandler = (request, response) => {
   const { username, reason } = request.body as {
     username?: string;
     reason?: string;
@@ -98,6 +103,19 @@ app.post("/report", (request, response) => {
   if (!username || !reason) return response.status(400).json({ ok: false });
   reports.push({ username, reason });
   return response.json({ ok: true });
+};
+app.post(["/report", "/api/report"], reportHandler);
+
+app.use(express.static(frontendDirectory, { index: false }));
+app.use((request, response, next) => {
+  const path = request.path;
+  const reservedPath = path === "/ws" || path.startsWith("/ws/") ||
+    path === "/health" || path.startsWith("/health/") ||
+    path === "/report" || path.startsWith("/report/") ||
+    path === "/api" || path.startsWith("/api/") ||
+    path === "/assets" || path.startsWith("/assets/");
+  if (request.method !== "GET" || reservedPath) return next();
+  return response.sendFile(frontendIndex);
 });
 
 const send = (socket: WebSocket, type: string, payload?: unknown) => {
