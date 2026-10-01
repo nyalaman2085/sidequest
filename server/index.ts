@@ -118,6 +118,11 @@ app.use((request, response, next) => {
     path === "/api" || path.startsWith("/api/") ||
     path === "/assets" || path.startsWith("/assets/");
   if (request.method !== "GET" || reservedPath) return next();
+  response.set({
+    "Cache-Control": "no-store, max-age=0",
+    Pragma: "no-cache",
+    Expires: "0",
+  });
   return response.sendFile(frontendIndex);
 });
 
