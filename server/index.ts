@@ -8,6 +8,7 @@ import { WebSocketServer, WebSocket } from "ws";
 const MAX_PAYLOAD_BYTES = 64 * 1024;
 const MAX_CONNECTIONS = 500;
 const MAX_WAITING = 200;
+const MAX_REPORTS = 1_000;
 const RATE_WINDOW_MS = 10_000;
 const RATE_LIMITS = { signaling: 120, chat: 12, control: 8 } as const;
 const HEARTBEAT_INTERVAL_MS = 30_000;
@@ -69,7 +70,7 @@ function isIceCandidate(value: unknown) {
 }
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: "16kb" }));
 const serverDirectory = dirname(fileURLToPath(import.meta.url));
 const frontendDirectory = resolve(serverDirectory, "../dist");
 const frontendIndex = resolve(frontendDirectory, "index.html");
@@ -96,11 +97,13 @@ app.get("/health", (_request, response) =>
   response.status(200).json({ ok: true }),
 );
 const reportHandler: express.RequestHandler = (request, response) => {
-  const { username, reason } = request.body as {
-    username?: string;
-    reason?: string;
-  };
-  if (!username || !reason) return response.status(400).json({ ok: false });
+  if (!isRecord(request.body)) return response.status(400).json({ ok: false });
+  const { username, reason } = request.body;
+  if (typeof username !== "string" || !username.trim() || username.length > 64 ||
+    typeof reason !== "string" || !reason.trim() || reason.length > 500) {
+    return response.status(400).json({ ok: false });
+  }
+  if (reports.length >= MAX_REPORTS) reports.shift();
   reports.push({ username, reason });
   return response.json({ ok: true });
 };
