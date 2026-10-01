@@ -74,6 +74,14 @@ app.use(express.json({ limit: "16kb" }));
 const serverDirectory = dirname(fileURLToPath(import.meta.url));
 const frontendDirectory = resolve(serverDirectory, "../dist");
 const frontendIndex = resolve(frontendDirectory, "index.html");
+const serveFrontend: express.RequestHandler = (_request, response) => {
+  response.set({
+    "Cache-Control": "no-store, max-age=0",
+    Pragma: "no-cache",
+    Expires: "0",
+  });
+  response.sendFile(frontendIndex);
+};
 const httpServer = createServer(app);
 const webSocketServer = new WebSocketServer({
   server: httpServer,
@@ -109,6 +117,7 @@ const reportHandler: express.RequestHandler = (request, response) => {
 };
 app.post(["/report", "/api/report"], reportHandler);
 
+app.get(["/", "/index.html"], serveFrontend);
 app.use(express.static(frontendDirectory, { index: false }));
 app.use((request, response, next) => {
   const path = request.path;
@@ -118,12 +127,7 @@ app.use((request, response, next) => {
     path === "/api" || path.startsWith("/api/") ||
     path === "/assets" || path.startsWith("/assets/");
   if (request.method !== "GET" || reservedPath) return next();
-  response.set({
-    "Cache-Control": "no-store, max-age=0",
-    Pragma: "no-cache",
-    Expires: "0",
-  });
-  return response.sendFile(frontendIndex);
+  return serveFrontend(request, response, next);
 });
 
 const send = (socket: WebSocket, type: string, payload?: unknown) => {
