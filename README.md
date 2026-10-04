@@ -2,15 +2,27 @@
 
 Sidequest is a simple random video chat app. It matches two people and connects their cameras directly with WebRTC.
 
-## 🚀 Live Demo
+## 🚀 Live Demo & How to Use
 
-Sidequest is deployed using Railway.
+Sidequest was previously deployed on Railway for demonstration. The hosted instance may be unavailable because this portfolio project is not maintained on a paid always-on hosting plan.
 
-**Live Demo:** https://sidequest-production-6892.up.railway.app
+**No paid hosting is required to run the project.** The complete source code and setup instructions are available in this repository.
 
-The live demo is intended for portfolio and recruiter review. If the live deployment is temporarily unavailable, the complete source code and local setup instructions are available in this repository.
+### Run Sidequest locally
 
-> The live service depends on the current hosting/deployment status. No hosting or billing details are required to use the project locally.
+1. Install Node.js 20 or newer.
+2. Clone this repository and open the project folder in VS Code.
+3. Run `npm install`.
+4. Run `npm run dev`.
+5. Open the local URL shown by Vite (the default setup uses `http://localhost:4173`).
+6. Allow camera and microphone access.
+7. Open the application in two browser tabs/windows and create a different username in each.
+8. Click **Find someone** in both sessions to test matchmaking and the WebRTC call.
+9. Use **Mute**, **Camera**, **Next person**, and the in-call chat to test the main features.
+
+### Recruiter / Viewer Note
+
+The GitHub repository is the permanent source of truth for the project. If the Railway demo is offline, you can run the application locally using the instructions above and inspect the complete implementation.
 
 ## Resume Project Description
 
