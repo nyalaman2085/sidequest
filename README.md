@@ -6,7 +6,7 @@ Sidequest is a simple random video chat app. It matches two people and connects 
 
 Sidequest is deployed using Railway.
 
-**Live Demo:** Railway-hosted production deployment
+**Live Demo:** https://sidequest-production-6892.up.railway.app
 
 The live demo is intended for portfolio and recruiter review. If the live deployment is temporarily unavailable, the complete source code and local setup instructions are available in this repository.
 
