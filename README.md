@@ -2,6 +2,16 @@
 
 Sidequest is a simple random video chat app. It matches two people and connects their cameras directly with WebRTC.
 
+## 🚀 Live Demo
+
+Sidequest is deployed using Railway.
+
+**Live Demo:** Railway-hosted production deployment
+
+The live demo is intended for portfolio and recruiter review. If the live deployment is temporarily unavailable, the complete source code and local setup instructions are available in this repository.
+
+> The live service depends on the current hosting/deployment status. No hosting or billing details are required to use the project locally.
+
 ## Resume Project Description
 
 - Engineered a full-stack peer-to-peer video chat platform with a React, TypeScript, and Vite frontend featuring dynamic media rendering, call controls, in-call text chat, and client-side privacy controls.
