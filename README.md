@@ -20,6 +20,27 @@ Sidequest was previously deployed on Railway for demonstration. The hosted insta
 8. Click **Find someone** in both sessions to test matchmaking and the WebRTC call.
 9. Use **Mute**, **Camera**, **Next person**, and the in-call chat to test the main features.
 
+### Quick Test
+
+You can test the complete video-chat flow locally with two browser sessions:
+
+1. **Browser / Tab 1:** Open Sidequest and create User A.
+2. **Browser / Tab 2:** Open Sidequest and create User B.
+3. Allow camera and microphone access in both sessions.
+4. Click **Find someone** in both sessions.
+5. Wait for matchmaking to connect the two users.
+6. Verify the local and remote video/audio streams.
+7. Test **Mute**, **Camera**, **Next person**, and the in-call chat.
+8. Click **Next person** to test leaving the current match and requesting another match.
+
+### How the project works
+
+- The React frontend manages the interface, media permissions, video elements, controls, and WebRTC lifecycle.
+- The Node.js/WebSocket server provides queue-based matchmaking and signaling.
+- WebSockets exchange WebRTC offers, answers, ICE candidates, and chat messages.
+- WebRTC establishes the browser-to-browser audio/video connection.
+- The current implementation uses STUN discovery for WebRTC connectivity.
+
 ### Recruiter / Viewer Note
 
 The GitHub repository is the permanent source of truth for the project. If the Railway demo is offline, you can run the application locally using the instructions above and inspect the complete implementation.
