@@ -41,6 +41,16 @@ You can test the complete video-chat flow locally with two browser sessions:
 - WebRTC establishes the browser-to-browser audio/video connection.
 - The current implementation uses STUN discovery for WebRTC connectivity.
 
+### Stop the local server
+
+When you finish testing Sidequest, return to the Terminal window where `npm run dev` is running and press:
+
+```text
+Ctrl + C
+```
+
+This stops both the Vite frontend and the Sidequest signaling server. You can start it again later with the same HTTPS `npm run dev` command.
+
 ### Recruiter / Viewer Note
 
 The GitHub repository is the permanent source of truth for the project. If the Railway demo is offline, you can run the application locally using the instructions above and inspect the complete implementation.
