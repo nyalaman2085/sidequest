@@ -1,5 +1,5 @@
 {
-  "name": "new",
+  "name": "sidequest",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -31,5 +31,9 @@
     "tsx": "^4.23.12",
     "typescript": "~6.0.2",
     "vite": "^8.2.2"
+  },
+  "description": "One-to-one random video chat demo using React, WebRTC, and WebSockets",
+  "engines": {
+    "node": ">=20.19.0"
   }
 }

@@ -49,7 +49,6 @@
   gap: 10px;
 }
 
-.theme-button,
 .account-button,
 .text-action {
   min-height: 40px;
@@ -832,20 +831,6 @@ input:focus-visible {
   background: var(--accent);
 }
 
-.chat-tools {
-  margin: 0 0 10px;
-}
-
-.icebreaker-button {
-  min-height: 34px;
-  padding: 0 10px;
-  border: 1px solid #3b4534;
-  border-radius: 7px;
-  color: #c6d9a2;
-  background: #20251e;
-  font-size: 11px;
-}
-
 .chat-form {
   display: flex;
   gap: 7px;
@@ -875,23 +860,6 @@ input:focus-visible {
   color: var(--accent-ink);
   background: var(--accent);
   font: 600 12px ui-sans-serif, system-ui, sans-serif;
-}
-
-.safety-tools {
-  display: flex;
-  justify-content: flex-end;
-  gap: 14px;
-  padding-top: 12px;
-}
-
-.safety-tools button {
-  padding: 0;
-  border: 0;
-  color: var(--faint);
-  background: none;
-  font-size: 11px;
-  text-decoration: underline;
-  text-underline-offset: 2px;
 }
 
 .foot {
@@ -972,47 +940,6 @@ input:focus-visible {
   right: 20px;
 }
 
-html[data-theme="light"] .shell {
-  --page: #f1f2eb;
-  --surface: #ffffff;
-  --surface-raised: #e7eadf;
-  --line: #d7dbd0;
-  --text: #20251d;
-  --muted: #646d60;
-  --faint: #777f73;
-  --accent: #526c32;
-  --accent-ink: #fff;
-}
-
-html[data-theme="light"] .landing-art,
-html[data-theme="light"] .device-preview,
-html[data-theme="light"] .chat-panel,
-html[data-theme="light"] .call-controls {
-  background-color: #e5e9df;
-}
-
-html[data-theme="light"] .art-card,
-html[data-theme="light"] .card-front {
-  color: #293123;
-  background: #dce4d2;
-}
-
-html[data-theme="light"] .device-preview > video,
-html[data-theme="light"] .remote-video,
-html[data-theme="light"] .local-preview video {
-  background: #dce2d8;
-}
-
-html[data-theme="light"] .chat-form input,
-html[data-theme="light"] .account-modal input {
-  color: #20251d;
-  background: #f8f9f5;
-}
-
-html[data-theme="light"] .account-modal {
-  background: #f4f6ef;
-}
-
 @keyframes pulse {
   50% { opacity: 0.45; }
 }
@@ -1065,7 +992,6 @@ html[data-theme="light"] .account-modal {
     gap: 7px;
   }
 
-  .theme-button,
   .account-button {
     min-height: 36px;
     padding: 0 9px;
