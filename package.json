@@ -34,6 +34,6 @@
   },
   "description": "One-to-one random video chat demo using React, WebRTC, and WebSockets",
   "engines": {
-    "node": ">=20"
+    "node": ">=20.19.0"
   }
 }
