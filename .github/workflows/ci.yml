@@ -1,0 +1,26 @@
+name: Portfolio CI
+
+on:
+  push:
+    branches: ["main", "portfolio/recruiter-readiness"]
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Type-check and build client and server
+        run: npm run build
