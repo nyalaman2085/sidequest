@@ -1,187 +1,150 @@
-# Sidequest
+# Sidequest — Random Video Chat
 
-Sidequest is a simple random video chat app. It matches two people and connects their cameras directly with WebRTC.
+Sidequest is a browser-based, one-to-one video chat demo. It uses React and TypeScript for the client, a Node.js WebSocket server for matchmaking/signaling, and WebRTC for peer-to-peer media.
 
-## 🚀 Live Demo & How to Use
+> **Portfolio/demo status:** This is a learning project, not a production-ready anonymous chat service. The current signaling server keeps its matchmaking state and user reports in memory. The WebRTC configuration uses a public STUN server and does not include a TURN relay, so some network combinations will fail to connect.
 
-Sidequest was previously deployed on Railway for demonstration. The hosted instance may be unavailable because this portfolio project is not maintained on a paid always-on hosting plan.
+## Highlights
 
-**No paid hosting is required to run the project.** The complete source code and setup instructions are available in this repository.
+- Username-based lobby and queue matchmaking
+- Browser camera and microphone permission flow
+- WebRTC audio/video with local and remote media panels
+- Mute and camera controls
+- In-call text chat
+- Next-person / leave flow
+- Responsive interface and keyboard-accessible profile dialog
+- WebSocket message validation, payload limits, rate limits, heartbeat checks, and origin allowlisting on the server
+- Health endpoint at \`/health\`
 
-### Run Sidequest locally
+## Tech stack
 
-1. Install Node.js 20 or newer.
-2. Clone this repository and open the project folder in VS Code.
-3. Run `npm install`.
-4. Run `npm run dev`.
-5. Open the local URL shown by Vite (the default setup uses `http://localhost:4173`).
-6. Allow camera and microphone access.
-7. Open the application in two browser tabs/windows and create a different username in each.
-8. Click **Find someone** in both sessions to test matchmaking and the WebRTC call.
-9. Use **Mute**, **Camera**, **Next person**, and the in-call chat to test the main features.
+- React, TypeScript, Vite
+- Node.js, Express, \`ws\`
+- WebRTC APIs: \`RTCPeerConnection\`, ICE candidates, media tracks
+- CSS
+- TypeScript build for the signaling server
 
-### Quick Test
+## Architecture
 
-You can test the complete video-chat flow locally with two browser sessions:
+\`\`\`text
+React browser client
+  |-- getUserMedia: local camera/microphone
+  |-- WebSocket /ws: matchmaking + signaling + chat
+  |-- RTCPeerConnection: peer-to-peer media
+  |
+Node.js + Express server
+  |-- waiting queue and match IDs
+  |-- validates/rate-limits signaling and chat messages
+  |-- /health endpoint
+  |-- serves the built frontend in production
+\`\`\`
 
-1. **Browser / Tab 1:** Open Sidequest and create User A.
-2. **Browser / Tab 2:** Open Sidequest and create User B.
-3. Allow camera and microphone access in both sessions.
+The server relays WebRTC offers, answers, and ICE candidates; the media stream is intended to travel directly between browsers. The server does not receive or record the media stream.
+
+## Requirements
+
+- Node.js 20 or newer
+- npm
+- A modern browser with camera/microphone support
+- For LAN testing on iOS/iPadOS, a trusted HTTPS certificate is required for camera/microphone access
+
+## Run locally
+
+\`\`\`bash
+git clone https://github.com/nyalaman2085/sidequest.git
+cd sidequest
+npm ci
+npm run dev
+\`\`\`
+
+Open the Vite URL printed in the terminal (normally \`http://localhost:4173\`). The development frontend proxies \`/ws\` and \`/api\` to the local signaling server on port \`8787\`.
+
+### Test the main flow
+
+1. Open Sidequest in two separate browser sessions (for example, a normal window and a private window).
+2. Set a different username in each session.
+3. Allow camera and microphone access.
 4. Click **Find someone** in both sessions.
-5. Wait for matchmaking to connect the two users.
-6. Verify the local and remote video/audio streams.
-7. Test **Mute**, **Camera**, **Next person**, and the in-call chat.
-8. Click **Next person** to test leaving the current match and requesting another match.
+5. Confirm the remote video appears and audio works in both directions.
+6. Test mute, camera off/on, in-call chat, and **Next person**.
+7. Close one browser session and confirm the other sees the partner-left state and can search again.
+8. Reload the page and verify the app returns to a usable state.
 
-### How the project works
+Camera and microphone permissions generally require HTTPS or localhost. See the LAN/iPad section below for development certificate instructions.
 
-- The React frontend manages the interface, media permissions, video elements, controls, and WebRTC lifecycle.
-- The Node.js/WebSocket server provides queue-based matchmaking and signaling.
-- WebSockets exchange WebRTC offers, answers, ICE candidates, and chat messages.
-- WebRTC establishes the browser-to-browser audio/video connection.
-- The current implementation uses STUN discovery for WebRTC connectivity.
+## Production build
 
-### Stop the local server
+Run the same build command used by the project:
 
-When you finish testing Sidequest, return to the Terminal window where `npm run dev` is running and press:
+\`\`\`bash
+npm ci
+npm run build
+npm start
+\`\`\`
 
-```text
-Ctrl + C
-```
+The build should produce the Vite frontend in \`dist/\` and the compiled signaling server in \`server-dist/\`. The production server requires the hosting platform to supply \`PORT\`. Configure \`SIDEQUEST_ALLOWED_ORIGINS\` as a comma-separated list of the exact public frontend origins, including scheme and hostname, for example:
 
-This stops both the Vite frontend and the Sidequest signaling server. You can start it again later with the same HTTPS `npm run dev` command.
+\`\`\`text
+SIDEQUEST_ALLOWED_ORIGINS=https://your-app.example.com
+\`\`\`
 
-### Recruiter / Viewer Note
+Do not use a wildcard origin for production. Verify the deployed health endpoint at \`https://your-app.example.com/health\` and test WebSocket upgrade behavior from the deployed origin.
 
-The GitHub repository is the permanent source of truth for the project. If the Railway demo is offline, you can run the application locally using the instructions above and inspect the complete implementation.
+## Free/local demonstration
 
-## Resume Project Description
+No paid service is required to run the project locally. A public hosted demo may sleep, expire, or be unavailable on free hosting; the repository and local run instructions are the dependable demo path. Do not advertise a public live demo unless you have checked it recently.
 
-- Engineered a full-stack peer-to-peer video chat platform with a React, TypeScript, and Vite frontend featuring dynamic media rendering, call controls, in-call text chat, and client-side privacy controls.
-- Architected a Node.js, Express, and WebSockets signaling server with queue-based matchmaking and real-time offer, answer, ICE candidate, and chat message exchange.
-- Implemented WebRTC browser-to-browser media streaming with STUN server discovery, connection lifecycle management, and local/remote stream handling.
-- Optimized audio/video capture for 720p video at 30 FPS with echo cancellation, noise suppression, automatic gain control, and configurable microphone and camera controls.
+## HTTPS for iPad on a local network
 
-**Tech Stack:** React, TypeScript, Node.js, WebSockets, WebRTC, Vite, Express
+A plain HTTP LAN address generally cannot access camera/microphone APIs. For development only, you can use \`mkcert\` to create a locally trusted certificate for your Mac's LAN IP.
 
-## Run the app
+1. Install mkcert and create a local development CA: \`brew install mkcert && mkcert -install\`.
+2. Create a local \`certs\` directory and generate a certificate for the Mac's current LAN IP plus localhost.
+3. Keep the CA private key on the Mac; never commit certificate private keys to GitHub.
+4. Trust the development CA on the iPad using Apple's certificate-profile and full-trust settings.
+5. Start the app with \`SIDEQUEST_DEV_CERT\` and \`SIDEQUEST_DEV_KEY\` pointing to the certificate and key files.
+6. Open the HTTPS URL using the Mac's current LAN IP on the iPad.
 
-1. Install Node.js 20 or newer.
-2. Open this project folder in VS Code.
-3. Run `npm install` in the terminal.
-4. Run `npm run dev`.
-5. Open `http://localhost:4173`.
-6. Click **Your profile** and choose a username.
-7. Open the same URL in a second tab or browser and create another username.
-8. Allow camera and microphone access in both tabs.
-9. Click **Find someone** in both tabs.
-10. Use **Mute**, **Camera**, or **Next person** during a call.
-11. When connected, type a message in the chat box and click **Send**.
-12. Use **Icebreaker** for a quick friendly message suggestion.
+Certificates are for local development only. Do not use a local mkcert CA for public production hosting.
 
-The health endpoint is available at `http://localhost:8787/health`.
+## Configuration notes and limitations
 
-## Test camera and microphone from an iPad on your local network
+- **STUN-only WebRTC:** some restrictive networks need a TURN relay. TURN is not configured by default, and adding a reliable public service may incur cost.
+- **In-memory reports:** reports are kept in process memory and are lost on restart. There is no moderation dashboard or durable report database.
+- **Local block list:** the browser stores blocked usernames locally. This is not an account-level moderation system and should not be described as guaranteed matchmaking exclusion unless that behavior is tested and implemented.
+- **No authentication:** usernames are display labels, not verified identities.
+- **No media recording:** the app does not upload or persist the audio/video stream by design.
+- **Scale:** queue and match state are held in one server process; multiple replicas would need shared state and coordination.
 
-An iPad cannot use camera or microphone from the plain HTTP LAN address. Use a locally trusted HTTPS certificate for the Mac's LAN IP instead. The Vite server stays on port `4173`; its existing `/ws` and `/api` proxies continue forwarding to the local signaling server on port `8787`.
+## Privacy and safety
 
-### 1. Install mkcert and create a local certificate authority
+- Camera/microphone access is controlled by browser permissions.
+- Leave the call or close the page to stop using the session; the app cleanup stops local media tracks.
+- Do not use this demo with sensitive conversations or assume that usernames are verified.
+- A public launch needs stronger moderation, abuse reporting and retention policies, durable storage, operational monitoring, TURN infrastructure, and a documented privacy policy.
 
-On the Mac, install Homebrew if it is not already installed, then run:
+## Troubleshooting
 
-```sh
-brew install mkcert
-mkcert -install
-mkdir -p certs
-```
+- **Camera/mic unavailable:** use localhost or HTTPS, check browser permissions, and ensure another application is not exclusively using the device.
+- **WebSocket fails:** verify the frontend origin is allowed in production and that the hosting platform supports WebSocket upgrades.
+- **Matched but no media:** try a different network/browser. STUN-only ICE can fail behind some NAT/firewall combinations; a TURN relay is the usual next step.
+- **Production page loads but API fails:** confirm the server is serving the built \`dist/\` directory and that the deployment provides \`PORT\`.
+- **iPad on LAN:** use the HTTPS instructions above; a certificate warning usually means the local certificate is not trusted or does not match the current IP.
 
-`mkcert -install` creates a local development CA and trusts it on the Mac. This CA is for local development only.
+## Portfolio walkthrough
 
-### 2. Generate a certificate for the Mac's current LAN IP
+In an interview, explain the lifecycle in this order:
 
-For a Mac connected over Wi-Fi, get its current address and generate a certificate/key pair:
+1. Client requests local media with \`getUserMedia\`.
+2. Client opens \`/ws\` and joins the waiting queue.
+3. The server pairs two clients and creates a match ID.
+4. The initiator creates an SDP offer; both peers exchange offers/answers and ICE candidates over WebSocket signaling.
+5. Once ICE connects, media travels peer-to-peer.
+6. Chat uses the WebSocket server and is scoped to the active match ID.
+7. Leave/skip/disconnect closes the peer connection, clears match state, and lets the remaining user continue.
 
-```sh
-export SIDEQUEST_LAN_IP="$(ipconfig getifaddr en0)"
-mkcert -key-file certs/sidequest-key.pem -cert-file certs/sidequest.pem "$SIDEQUEST_LAN_IP" localhost 127.0.0.1 ::1
-```
+Be ready to discuss race conditions during skip/disconnect, the difference between STUN and TURN, why production origin allowlisting matters, and why in-memory moderation is only a demo-level implementation.
 
-Check the address with `echo "$SIDEQUEST_LAN_IP"`. If that variable is empty, find the Mac's Wi-Fi address in **System Settings → Wi-Fi → Details** and set it manually, for example `export SIDEQUEST_LAN_IP="192.168.29.4"`, then rerun the `mkcert` command. If the Mac's LAN IP changes, regenerate the certificate for the new IP.
+## License
 
-### 3. Trust the local CA on the iPad
-
-Find the CA certificate on the Mac:
-
-```sh
-mkcert -CAROOT
-```
-
-Transfer the `rootCA.pem` file from that directory to the iPad (for example, using AirDrop). Do **not** transfer `rootCA-key.pem`; the CA private key must remain on the Mac. On the iPad, open the transferred certificate and install its profile in **Settings → Profile Downloaded** (or **Settings → General → VPN & Device Management**). Then enable trust under **Settings → General → About → Certificate Trust Settings → Enable Full Trust for Root Certificates**. Apple requires manually installed root certificates to be explicitly trusted for SSL/TLS.
-
-### 4. Start Sidequest over HTTPS and open it on the iPad
-
-From the project directory on the Mac, run:
-
-```sh
-SIDEQUEST_DEV_CERT=certs/sidequest.pem SIDEQUEST_DEV_KEY=certs/sidequest-key.pem npm run dev
-```
-
-Keep the Mac and iPad on the same reachable Wi-Fi network, allow incoming connections to port `4173` in the Mac firewall, then open this URL in iPad Safari (replace the address if the Mac's LAN IP differs):
-
-```text
-https://192.168.29.4:4173
-```
-
-The certificate variables are optional. If either variable is unset or either file does not exist, Vite keeps its normal HTTP development mode at `http://localhost:4173`. When HTTPS is enabled, the browser uses WSS for `/ws`; Vite terminates TLS and proxies that connection to the existing local WebSocket server.
-
-## Skills and technologies, in order
-
-1. **HTML**: page structure, headings, buttons, video elements, and accessibility labels.
-2. **CSS**: responsive layout, colors, spacing, video panels, buttons, and animation.
-3. **JavaScript**: browser actions, button clicks, timers, media permissions, and WebSocket messages.
-4. **TypeScript**: safer JavaScript with types for connection states and WebRTC messages.
-5. **React**: reusable UI, component state, effects, and live screen updates.
-6. **Vite**: fast development server and production frontend build.
-7. **Node.js**: JavaScript runtime for the backend server.
-8. **Express**: simple backend health endpoint.
-9. **WebSockets**: real-time connection between the browser and matchmaking server.
-10. **WebRTC**: direct browser-to-browser camera and microphone connection.
-11. **STUN**: helps browsers discover how to connect across networks.
-12. **npm**: installs packages and runs project scripts.
-
-## Project flow
-
-- React shows the interface and asks for camera and microphone access.
-- The browser connects to the WebSocket server when **Find someone** is clicked.
-- The server places the first visitor in a waiting queue.
-- The next visitor is matched with the first visitor.
-- WebRTC exchanges an offer, answer, and network candidates through WebSockets.
-- After setup, video and audio travel directly between the two browsers.
-- Chat messages travel through the WebSocket server only between the matched pair.
-
-For a real public launch, add login, moderation, report storage, rate limiting, HTTPS/WSS, and a TURN server.
-
-## Privacy
-
-No email is collected. The username is stored in the current browser and sent to the matching server for display during a call. Camera and microphone access are requested by the browser when you begin the device check; the app does not upload recordings.
-
-The call requests HD video up to 720p at 30 FPS and uses microphone echo cancellation, noise suppression, automatic gain control, and mono audio to reduce background noise and feedback.
-
-## Folder guide
-
-```text
-new/
-|-- src/                 Frontend React application
-|   |-- App.tsx          Video chat screen and WebRTC logic
-|   |-- App.css          Video chat design
-|   |-- index.css        Global browser styles
-|   `-- main.tsx         React entry point
-|-- server/
-|   `-- index.ts         Matchmaking and WebSocket signaling
-|-- docs/
-|   `-- FOLDER_GUIDE.md  Detailed folder explanation
-|-- index.html           Browser page shell
-|-- package.json         Commands and dependencies
-|-- vite.config.ts       Vite configuration
-`-- README.md            Setup, skills, and project guide
-```
+Add a license file before inviting reuse or contributions. Review dependency licenses separately.
