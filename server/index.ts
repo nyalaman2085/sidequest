@@ -8,7 +8,6 @@ import { WebSocketServer, WebSocket } from "ws";
 const MAX_PAYLOAD_BYTES = 64 * 1024;
 const MAX_CONNECTIONS = 500;
 const MAX_WAITING = 200;
-const MAX_REPORTS = 1_000;
 const RATE_WINDOW_MS = 10_000;
 const RATE_LIMITS = { signaling: 120, chat: 12, control: 8 } as const;
 const HEARTBEAT_INTERVAL_MS = 30_000;
@@ -99,31 +98,16 @@ const matchIdOf = new Map<WebSocket, string>();
 const chatIdsOf = new Map<WebSocket, Set<string>>();
 const rateWindowsOf = new Map<WebSocket, Map<RateCategory, RateWindow>>();
 const aliveSockets = new WeakSet<WebSocket>();
-const reports: { username: string; reason: string }[] = [];
 
 app.get("/health", (_request, response) =>
   response.status(200).json({ ok: true }),
 );
-const reportHandler: express.RequestHandler = (request, response) => {
-  if (!isRecord(request.body)) return response.status(400).json({ ok: false });
-  const { username, reason } = request.body;
-  if (typeof username !== "string" || !username.trim() || username.length > 64 ||
-    typeof reason !== "string" || !reason.trim() || reason.length > 500) {
-    return response.status(400).json({ ok: false });
-  }
-  if (reports.length >= MAX_REPORTS) reports.shift();
-  reports.push({ username, reason });
-  return response.json({ ok: true });
-};
-app.post(["/report", "/api/report"], reportHandler);
-
 app.get(["/", "/index.html"], serveFrontend);
 app.use(express.static(frontendDirectory, { index: false }));
 app.use((request, response, next) => {
   const path = request.path;
   const reservedPath = path === "/ws" || path.startsWith("/ws/") ||
     path === "/health" || path.startsWith("/health/") ||
-    path === "/report" || path.startsWith("/report/") ||
     path === "/api" || path.startsWith("/api/") ||
     path === "/assets" || path.startsWith("/assets/");
   if (request.method !== "GET" || reservedPath) return next();
