@@ -2,7 +2,7 @@
 
 Sidequest is a browser-based, one-to-one video chat demo. It uses React and TypeScript for the client, a Node.js WebSocket server for matchmaking/signaling, and WebRTC for peer-to-peer media.
 
-> **Portfolio/demo status:** This is a learning project, not a production-ready anonymous chat service. The current signaling server keeps its matchmaking state and user reports in memory. The WebRTC configuration uses a public STUN server and does not include a TURN relay, so some network combinations will fail to connect.
+> **Portfolio/demo status:** This is a learning project, not a production-ready anonymous chat service. The current signaling server keeps matchmaking state in memory. The WebRTC configuration uses a public STUN server and does not include a TURN relay, so some network combinations will fail to connect.
 
 ## Highlights
 
@@ -43,7 +43,7 @@ The server relays WebRTC offers, answers, and ICE candidates; the media stream i
 
 ## Requirements
 
-- Node.js 20 or newer
+- Node.js 20.19 or newer (or Node.js 22.12 or newer)
 - npm
 - A modern browser with camera/microphone support
 - For LAN testing on iOS/iPadOS, a trusted HTTPS certificate is required for camera/microphone access
