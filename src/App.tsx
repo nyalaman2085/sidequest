@@ -16,13 +16,6 @@ type ChatMessage = {
 };
 type Account = { username: string };
 
-const icebreakers = [
-  "What is something small that made you smile today?",
-  "What is a place you would love to visit?",
-  "What song have you been enjoying lately?",
-  "What is a hobby you would like to try?",
-];
-
 const iceServers = [{ urls: "stun:stun.l.google.com:19302" }];
 
 const opusParameters = {
@@ -94,7 +87,6 @@ function App() {
   const [sessionTime, setSessionTime] = useState(0);
   const [chatInput, setChatInput] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-  const [icebreakerIndex, setIcebreakerIndex] = useState(0);
   const [account, setAccount] = useState<Account | null>(() => {
     try {
       const saved = localStorage.getItem("sidequest-account");
@@ -114,15 +106,7 @@ function App() {
   const [microphoneAvailable, setMicrophoneAvailable] = useState(false);
   const [cameraIssue, setCameraIssue] = useState("");
   const [microphoneIssue, setMicrophoneIssue] = useState("");
-  const [theme, setTheme] = useState<"dark" | "light">(
-    () =>
-      (localStorage.getItem("sidequest-theme") as "dark" | "light") || "dark",
-  );
   const [otherUsername, setOtherUsername] = useState("Someone new");
-  const [blockedUsers, setBlockedUsers] = useState<string[]>(
-    () =>
-      JSON.parse(localStorage.getItem("sidequest-blocked") || "[]") as string[],
-  );
   const chatEndRef = useRef<HTMLDivElement>(null);
   const previewRef = useRef<HTMLVideoElement>(null);
   const remoteRef = useRef<HTMLVideoElement>(null);
@@ -148,11 +132,6 @@ function App() {
       block: "nearest",
     });
   }, [chatMessages]);
-
-  useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-    localStorage.setItem("sidequest-theme", theme);
-  }, [theme]);
 
   useEffect(
     () => () => {
@@ -476,29 +455,9 @@ function App() {
     if (!username) return;
     const nextAccount = { username };
     setAccount(nextAccount);
-    localStorage.setItem("sidequest-account", JSON.stringify(nextAccount));
+    try { localStorage.setItem("sidequest-account", JSON.stringify(nextAccount)); } catch { /* Storage may be unavailable in private browsing. */ }
     setShowAccount(false);
     beginCameraCheck();
-  };
-
-  const reportUser = async () => {
-    if (!otherUsername || otherUsername === "Someone new") return;
-    await fetch("/api/report", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: otherUsername, reason: "User report" }),
-    }).catch(() => undefined);
-    setNotice(`${otherUsername} was reported. You can find someone else.`);
-    nextPerson();
-  };
-
-  const blockUser = () => {
-    if (!otherUsername || otherUsername === "Someone new") return;
-    const nextBlocked = [...new Set([...blockedUsers, otherUsername])];
-    setBlockedUsers(nextBlocked);
-    localStorage.setItem("sidequest-blocked", JSON.stringify(nextBlocked));
-    setNotice(`${otherUsername} is blocked for this browser.`);
-    nextPerson();
   };
 
   const findSomeone = () => {
@@ -711,11 +670,6 @@ function App() {
     }
   };
 
-  const addIcebreaker = () => {
-    setChatInput(icebreakers[icebreakerIndex]);
-    setIcebreakerIndex((index) => (index + 1) % icebreakers.length);
-  };
-
   const formatTime = `${String(Math.floor(sessionTime / 60)).padStart(2, "0")}:${String(sessionTime % 60).padStart(2, "0")}`;
 
   const inSession = ["searching", "connecting", "connected"].includes(connectionState);
@@ -732,9 +686,6 @@ function App() {
         </a>
         <div className="nav-actions">
           {inSession ? <span className="session-identity">{account ? `@${account.username}` : "Guest"}</span> : null}
-          <button className="theme-button" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} aria-label="Change theme">
-            {theme === "dark" ? "Light mode" : "Dark mode"}
-          </button>
           <button className="account-button" onClick={() => { setAccountForm(account || { username: "" }); setShowAccount(true); }}>
             {account ? `@${account.username}` : "Your profile"}
           </button>
@@ -836,9 +787,7 @@ function App() {
               {chatMessages.length === 0 ? <div className="chat-empty"><span>✳</span><strong>Say hello</strong><p>A friendly message is a good place to start.</p></div> : chatMessages.map((message) => <div className={`chat-message ${message.sender}`} key={message.id}><span>{message.sender === "you" ? "You" : `@${otherUsername}`}</span><p className="chat-bubble">{message.text}</p></div>)}
               <div ref={chatEndRef} />
             </div>
-            <div className="chat-tools"><button type="button" className="icebreaker-button" onClick={addIcebreaker} disabled={connectionState !== "connected"}>✳ Try a conversation starter</button></div>
             <form className="chat-form" onSubmit={sendChatMessage}><input value={chatInput} onChange={(event) => setChatInput(event.target.value)} placeholder="Write a message…" maxLength={300} disabled={connectionState !== "connected"} aria-label="Chat message" /><button type="submit" disabled={connectionState !== "connected" || !chatInput.trim()} aria-label="Send message">Send ↗</button></form>
-            <div className="safety-tools"><button onClick={blockUser} disabled={connectionState !== "connected"}>Block person</button><button onClick={reportUser} disabled={connectionState !== "connected"}>Report</button></div>
           </aside> : null}
         </section>
       ) : null}
