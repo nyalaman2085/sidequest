@@ -69,7 +69,6 @@ function isIceCandidate(value: unknown) {
 }
 
 const app = express();
-app.use(express.json({ limit: "16kb" }));
 const serverDirectory = dirname(fileURLToPath(import.meta.url));
 const frontendDirectory = resolve(serverDirectory, "../dist");
 const frontendIndex = resolve(frontendDirectory, "index.html");
